@@ -1,0 +1,2 @@
+model,MAE mean,Best params
+Decision Tree (GridSearch),67.06738845155006,"{'max_depth': 3, 'min_samples_leaf': 1, 'min_samples_split': 2}"
