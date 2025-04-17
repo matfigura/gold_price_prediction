@@ -1,2 +1,4 @@
 model,MAE mean,Best params
 Decision Tree (GridSearch),67.06738845155006,"{'max_depth': 3, 'min_samples_leaf': 1, 'min_samples_split': 2}"
+Random Forest (GridSearch),11.667388226204693,"{'max_depth': 5, 'min_samples_leaf': 1, 'min_samples_split': 5, 'n_estimators': 50}"
+"SVM (SVR, GridSearch)",336.17861493400306,"{'C': 0.1, 'epsilon': 0.5, 'kernel': 'rbf'}"
