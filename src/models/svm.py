@@ -5,9 +5,9 @@ import numpy as np
 
 def train_svm(X_train, y_train):
     param_grid = {
-        'C': [0.1, 1, 10],
-        'epsilon': [0.01, 0.1, 0.5],
-        'kernel': ['rbf']  # RBF działa dobrze przy nieliniowych zależnościach
+    'C': [0.1, 1, 10, 50, 100],
+    'epsilon': [0.01, 0.1, 0.2, 0.5],
+    'kernel': ['rbf']
     }
 
     base_model = SVR()

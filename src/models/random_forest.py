@@ -32,3 +32,4 @@ def train_random_forest(X_train, y_train):
 
 def predict_random_forest(best_model, X_test):
     return best_model.predict(X_test)
+
