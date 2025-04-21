@@ -9,10 +9,10 @@ def train_xgboost(X_train, y_train):
     start_time = time.time()
 
     param_grid = {
-    'n_estimators': [1000, 3000, 5000],         
-    'learning_rate': [0.001, 0.0025, 0.005],    
-    'max_depth': [3, 5, 7],                     
-    'subsample': [0.8, 1.0],                    
+    'n_estimators': [1000],         
+    'learning_rate': [0.001],    
+    'max_depth': [3],                     
+    'subsample': [0.8],                    
     'colsample_bytree': [0.8, 1.0]              
 
 
