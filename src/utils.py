@@ -79,20 +79,35 @@ def join_prediction_plots(folder="results", output_path="results/all_models_prev
 
 
 def plot_error_heatmap(results_df, save_path="results/error_metrics_heatmap.png"):
-        if not {'model', 'MAE mean', 'MSE', 'RMSE'}.issubset(results_df.columns):
-            print("[WARN] Nie znaleziono pełnych danych do heatmapy.")
-            return
+    # Sprawdzenie wymaganych kolumn
+    if not {'model', 'MAE mean', 'RMSE', 'R^2'}.issubset(results_df.columns):
+        print("[WARN] Nie znaleziono pełnych danych do heatmapy.")
+        return
 
-        df_metrics = results_df[['model', 'MAE mean', 'MSE', 'RMSE']].copy()
-        df_metrics.columns = ['Model', 'MAE', 'MSE', 'RMSE']
-        df_metrics = df_metrics.sort_values(by='MAE', ascending=False).reset_index(drop=True)
-        df_metrics.set_index('Model', inplace=True)
+    # Przygotowanie danych
+    df_metrics = results_df[['model', 'MAE mean', 'RMSE', 'R^2']].copy()
+    df_metrics.columns = ['Model', 'MAE', 'RMSE', 'R^2']
+    df_metrics = df_metrics.sort_values(by='MAE', ascending=False).reset_index(drop=True)
+    df_metrics.set_index('Model', inplace=True)
 
-        # Skala logarytmiczna kolorów, wartości nadal czytelne
-        log_df = np.log1p(df_metrics)
-        plt.figure(figsize=(12, 6))
-        sns.heatmap(log_df, annot=df_metrics.round(2), fmt='', cmap="YlOrRd", linewidths=0.5, cbar_kws={'label': 'log(1 + error)'})
-        plt.title("Heatmapa MAE, MSE i RMSE (posortowana)")
-        plt.tight_layout()
-        plt.savefig(save_path)
-        plt.close()
+    # Przeskalowanie danych metrycznych (MAE, RMSE do 0–1), R^2 odwrotnie (1–R^2) też do 0–1
+    df_scaled = df_metrics.copy()
+    df_scaled[['MAE', 'RMSE']] = df_scaled[['MAE', 'RMSE']].apply(
+        lambda x: (x - x.min()) / (x.max() - x.min()) if x.max() != x.min() else 0
+    )
+    df_scaled['R^2'] = 1 - df_scaled['R^2']  # im wyższe R², tym "mniejszy błąd"
+
+    # Rysowanie heatmapy
+    plt.figure(figsize=(12, 6))
+    sns.heatmap(
+        df_scaled,
+        annot=df_metrics.round(2),
+        fmt='',
+        cmap="YlGnBu",
+        linewidths=0.5,
+        cbar_kws={'label': 'Znormalizowana wartość metryki (niższa = lepsza)'}
+    )
+    plt.title("Heatmapa MAE, RMSE i R² (odwrócony)")
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()

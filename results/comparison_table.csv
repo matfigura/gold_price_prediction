@@ -1,7 +1,7 @@
-model,MAE mean,MSE,RMSE,Best params
-Decision Tree (GridSearch),68.46531305181725,6553.057058309702,80.95095464730296,"{'max_depth': 3, 'min_samples_leaf': 1, 'min_samples_split': 2}"
-Random Forest (GridSearch),11.857870185632805,233.1646211086012,15.269728914050871,"{'max_depth': 5, 'min_samples_leaf': 1, 'min_samples_split': 5, 'n_estimators': 50}"
-XGBoost (GridSearch),150.4361415937242,36449.53144961894,190.91760382326964,"{'colsample_bytree': 1.0, 'learning_rate': 0.001, 'max_depth': 3, 'n_estimators': 1000, 'subsample': 0.8}"
-XGBoost (Early Stopping),5.907391478454765,92.9143527923108,9.639209137284594,"custom (n_estimators=10000, lr=0.001, early_stopping=50)"
-"MLPRegressor (GridSearch, scaled)",29.13732310164623,1571.8050538673056,39.64599669408383,"{'mlp__activation': 'relu', 'mlp__alpha': 0.0001, 'mlp__hidden_layer_sizes': (50,), 'mlp__learning_rate': 'adaptive'}"
-LSTM,31.50763152181143,2269.2325730483217,47.636462642059406,"custom (LSTM(64), dropout=0.2, adam)"
+model,MAE mean,RMSE,R^2,Best params
+Decision Tree (GridSearch),5.828,9.327,1.0,"{'max_depth': 50, 'min_samples_leaf': 4, 'min_samples_split': 2}"
+Random Forest (GridSearch),11.858,15.27,0.999,"{'max_depth': 5, 'min_samples_leaf': 1, 'min_samples_split': 5, 'n_estimators': 50}"
+XGBoost (GridSearch),150.436,190.918,0.855,"{'colsample_bytree': 1.0, 'learning_rate': 0.001, 'max_depth': 3, 'n_estimators': 1000, 'subsample': 0.8}"
+XGBoost (Early Stopping),5.907,9.639,1.0,"custom (n_estimators=10000, lr=0.001, early_stopping=50)"
+"MLPRegressor (GridSearch, scaled)",29.137,39.646,0.994,"{'mlp__activation': 'relu', 'mlp__alpha': 0.0001, 'mlp__hidden_layer_sizes': (50,), 'mlp__learning_rate': 'adaptive'}"
+LSTM,31.508,47.636,0.973,"custom (LSTM(64), dropout=0.2, adam)"

@@ -15,45 +15,74 @@ import time
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error,r2_score
 from PIL import Image
 import numpy as np
 from src.utils import plot_error_heatmap
+from src.data_exploration import plot_correlation_heatmap
+from src.feature_importance import plot_feature_importance_comparison
+from src.diagnostics import plot_learning_curve_dt, plot_validation_curve_dt
+from sklearn.tree import DecisionTreeRegressor
 
-X_train, X_test, y_train, y_test, dates_test = prepare_data()
+
+X_train, X_test, y_train, y_test, dates_test, features= prepare_data()
 results = []
 model_names = []
 mae_values = []
 
-# --- Decision Tree ---
+plot_correlation_heatmap()
+
+
+
 result_dt, best_model_dt = train_decision_tree(X_train, y_train)
 y_pred_dt = predict_decision_tree(best_model_dt, X_test)
 mae_dt = mean_absolute_error(y_test, y_pred_dt)
-mse_dt = mean_squared_error(y_test, y_pred_dt)
-rmse_dt = np.sqrt(mse_dt)
+rmse_dt = np.sqrt(mean_squared_error(y_test, y_pred_dt))
+r2_dt = r2_score(y_test, y_pred_dt)
 results.append({
     'model': 'Decision Tree (GridSearch)',
     'MAE mean': mae_dt,
-    'MSE': mse_dt,
     'RMSE': rmse_dt,
+    'R^2': r2_dt,
     'Best params': result_dt['Best params']
 })
 plot_predictions(y_test, y_pred_dt, dates_test, model_name="Decision Tree", save_path="results/decision_tree_plot.png")
 
-# --- Random Forest ---
+# Wykres krzywej uczenia
+plot_learning_curve_dt(
+    DecisionTreeRegressor(**result_dt['Best params'], random_state=42),
+    X_train, y_train,
+    save_path='results/learning_curve_dt.png'
+)
+
+# Wykres krzywej złożoności
+plot_validation_curve_dt(
+    X_train, y_train,
+    param_name='max_depth',
+    param_range=[1, 2, 3, 5, 7, 10, 15, 20],
+    save_path='results/validation_curve_max_depth.png'
+)
+
+
 result_rf, best_model_rf = train_random_forest(X_train, y_train)
 y_pred_rf = predict_random_forest(best_model_rf, X_test)
 mae_rf = mean_absolute_error(y_test, y_pred_rf)
-mse_rf = mean_squared_error(y_test, y_pred_rf)
-rmse_rf = np.sqrt(mse_rf)
+rmse_rf = np.sqrt(mean_squared_error(y_test, y_pred_rf))
+r2_rf = r2_score(y_test, y_pred_rf)
 results.append({
     'model': 'Random Forest (GridSearch)',
     'MAE mean': mae_rf,
-    'MSE': mse_rf,
     'RMSE': rmse_rf,
+    'R^2': r2_rf,
     'Best params': result_rf['Best params']
 })
 plot_predictions(y_test, y_pred_rf, dates_test, model_name="Random Forest", save_path="results/random_forest_plot.png")
+
+dt_importance = best_model_dt.feature_importances_
+rf_importance = best_model_rf.feature_importances_
+
+# Wykres porównawczy
+plot_feature_importance_comparison(features, dt_importance, rf_importance)
 
 '''# Tylko Random Forest z RandomizedSearch
 result_rf_rand, best_model_rf_rand = train_random_forest_randomized(X_train, y_train)
@@ -76,54 +105,56 @@ results.append({
 })
 plot_predictions(y_test, y_pred_svm, dates_test, model_name="SVM", save_path="results/svm_plot.png")'''
 
-# --- XGBoost ---
+
+
+
 result_xgb, best_model_xgb = train_xgboost(X_train, y_train)
 y_pred_xgb = predict_xgboost(best_model_xgb, X_test)
 mae_xgb = mean_absolute_error(y_test, y_pred_xgb)
-mse_xgb = mean_squared_error(y_test, y_pred_xgb)
-rmse_xgb = np.sqrt(mse_xgb)
+rmse_xgb = np.sqrt(mean_squared_error(y_test, y_pred_xgb))
+r2_xgb = r2_score(y_test, y_pred_xgb)
 results.append({
     'model': 'XGBoost (GridSearch)',
     'MAE mean': mae_xgb,
-    'MSE': mse_xgb,
     'RMSE': rmse_xgb,
+    'R^2': r2_xgb,
     'Best params': result_xgb['Best params']
 })
 plot_predictions(y_test, y_pred_xgb, dates_test, model_name="XGBoost", save_path="results/xgboost_plot.png")
 
-# --- XGBoost Early Stopping ---
+
 result_xgb_es, best_model_xgb_es, y_pred_xgb_es = train_xgboost_custom(X_train, X_test, y_train, y_test)
 mae_xgb_es = mean_absolute_error(y_test, y_pred_xgb_es)
-mse_xgb_es = mean_squared_error(y_test, y_pred_xgb_es)
-rmse_xgb_es = np.sqrt(mse_xgb_es)
+rmse_xgb_es = np.sqrt(mean_squared_error(y_test, y_pred_xgb_es))
+r2_xgb_es = r2_score(y_test, y_pred_xgb_es)
 results.append({
     'model': 'XGBoost (Early Stopping)',
     'MAE mean': mae_xgb_es,
-    'MSE': mse_xgb_es,
     'RMSE': rmse_xgb_es,
+    'R^2': r2_xgb_es,
     'Best params': result_xgb_es['Best params']
 })
 plot_predictions(y_test, y_pred_xgb_es, dates_test, model_name="XGBoost (Early Stop)", save_path="results/xgboost_early_plot.png")
 
-# --- MLP ---
+
 start_time = time.time()
 result_mlp, best_model_mlp = train_mlp(X_train, y_train)
 y_pred_mlp = predict_mlp(best_model_mlp, X_test)
 end_time = time.time()
 mae_mlp = mean_absolute_error(y_test, y_pred_mlp)
-mse_mlp = mean_squared_error(y_test, y_pred_mlp)
-rmse_mlp = np.sqrt(mse_mlp)
+rmse_mlp = np.sqrt(mean_squared_error(y_test, y_pred_mlp))
+r2_mlp = r2_score(y_test, y_pred_mlp)
 results.append({
     'model': 'MLPRegressor (GridSearch, scaled)',
     'MAE mean': mae_mlp,
-    'MSE': mse_mlp,
     'RMSE': rmse_mlp,
+    'R^2': r2_mlp,
     'Best params': result_mlp['Best params']
 })
 plot_predictions(y_test, y_pred_mlp, dates_test, model_name="MLPRegressor", save_path="results/mlp_plot.png")
 print(f"Czas wykonania MLP: {end_time - start_time:.2f} sekund")
 
-# --- LSTM ---
+
 from src.data_lstm import create_lstm_data
 X_train, X_test, y_train, y_test, dates_test, scaler_y = create_lstm_data()
 start_time = time.time()
@@ -133,29 +164,29 @@ y_pred_lstm = scaler_y.inverse_transform(y_pred_lstm_scaled.reshape(-1, 1)).flat
 y_test_inv = scaler_y.inverse_transform(y_test.reshape(-1, 1)).flatten()
 end_time = time.time()
 mae_lstm = mean_absolute_error(y_test_inv, y_pred_lstm)
-mse_lstm = mean_squared_error(y_test_inv, y_pred_lstm)
-rmse_lstm = np.sqrt(mse_lstm)
+rmse_lstm = np.sqrt(mean_squared_error(y_test_inv, y_pred_lstm))
+r2_lstm = r2_score(y_test_inv, y_pred_lstm)
 results.append({
     'model': 'LSTM',
     'MAE mean': mae_lstm,
-    'MSE': mse_lstm,
     'RMSE': rmse_lstm,
+    'R^2': r2_lstm,
     'Best params': 'custom (LSTM(64), dropout=0.2, adam)'
 })
 plot_predictions(y_test_inv, y_pred_lstm, dates_test, model_name="LSTM", save_path="results/lstm_plot.png")
 print(f"Czas wykonania LSTM: {end_time - start_time:.2f} sekund")
 
 
-# Zapis tabeli wyników
+pd.set_option("display.float_format", "{:.3f}".format)
 results_df = pd.DataFrame(results)
-results_df.to_csv('results/comparison_table.csv', index=False)
+results_df.round(3).to_csv('results/comparison_table.csv', index=False)
 print(results_df)
 
-# Zbiorczy wykres PNG
+
 join_prediction_plots()
 
 
-# Automatyczne wyświetlenie heatmapy
+
 Image.open("results/error_metrics_heatmap.png").show()
 plot_error_heatmap(results_df)
 

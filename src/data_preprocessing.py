@@ -1,4 +1,4 @@
-# gold_price_prediction/src/data_preprocessing.py
+
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -16,6 +16,7 @@ def prepare_data(file_path='data/gold_data.csv'):
     X = df.drop(columns=['Date', 'Close'], errors='ignore')
     y = df['Close']
     dates = df['Date']
+    features = X.columns.tolist()
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
@@ -28,4 +29,4 @@ def prepare_data(file_path='data/gold_data.csv'):
     print(f"X_train: {X_train.shape}, y_train: {y_train.shape}")
     print(f"X_test: {X_test.shape}, y_test: {y_test.shape}")
 
-    return X_train, X_test, y_train, y_test, dates_test
+    return X_train, X_test, y_train, y_test, dates_test, features
