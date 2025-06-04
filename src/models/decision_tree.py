@@ -1,5 +1,5 @@
 from sklearn.tree import DecisionTreeRegressor
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.metrics import make_scorer, mean_absolute_error, r2_score, mean_squared_error
 import numpy as np
 
@@ -13,21 +13,38 @@ def train_decision_tree(X_train, y_train):
     base_model = DecisionTreeRegressor(random_state=42)
     rmse = make_scorer(lambda y_true, y_pred: np.sqrt(mean_squared_error(y_true, y_pred)), greater_is_better=False)
 
-    grid_search = GridSearchCV(
+    '''grid_search = GridSearchCV(
         estimator=base_model,
         param_grid=param_grid,
         scoring=rmse,
         cv=5,
         n_jobs=-1
+    )'''
+
+    random_search = RandomizedSearchCV(
+    estimator=base_model,
+    param_distributions=param_grid,
+    scoring=rmse,
+    cv=5,
+    n_iter=30,           # liczba losowych prób (możesz zmienić)
+    random_state=42,
+    n_jobs=-1
     )
 
-    grid_search.fit(X_train, y_train)
+    #grid_search.fit(X_train, y_train)
+    random_search.fit(X_train, y_train)
 
-    return {
+    '''return {
         'model': 'Decision Tree (GridSearch)',
         'RMSE mean': -grid_search.best_score_, #zmienić na mse?
         'Best params': grid_search.best_params_
-    }, grid_search.best_estimator_
+    }, grid_search.best_estimator_'''
+
+    return {
+    'model': 'Decision Tree (RandomSearch)',
+    'RMSE mean': -random_search.best_score_,
+    'Best params': random_search.best_params_
+    }, random_search.best_estimator_
 
 def predict_decision_tree(best_model, X_test):
     return best_model.predict(X_test)

@@ -1,4 +1,6 @@
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')
 import os
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
@@ -111,3 +113,33 @@ def plot_error_heatmap(results_df, save_path="results/error_metrics_heatmap.png"
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
+
+def plot_single_feature_importance(features, importances, title, save_path=None, csv_path=None, top_n=None):
+    sorted_idx = np.argsort(importances)[::-1]
+    sorted_idx = [i for i in sorted_idx if i < len(features)]
+    sorted_features = np.array(features)[sorted_idx]
+    sorted_importances = importances[sorted_idx]
+
+    if top_n is not None:
+        sorted_features = sorted_features[:top_n]
+        sorted_importances = sorted_importances[:top_n]
+
+    if save_path:
+        plt.figure(figsize=(12, 8))
+        plt.barh(sorted_features, sorted_importances, color='skyblue')
+        plt.xlabel("Ważność cechy")
+        plt.title(title)
+        plt.gca().invert_yaxis()
+        plt.tight_layout()
+
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path)
+        plt.close()
+
+    if csv_path:
+        df = pd.DataFrame({'feature': sorted_features, 'importance': sorted_importances})
+        os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+        df.to_csv(csv_path, index=False)
+
+
+

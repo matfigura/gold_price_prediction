@@ -18,7 +18,7 @@ import os
 from sklearn.metrics import mean_absolute_error, mean_squared_error,r2_score
 from PIL import Image
 import numpy as np
-from src.utils import plot_error_heatmap
+from src.utils import plot_error_heatmap, plot_single_feature_importance
 from src.data_exploration import plot_correlation_heatmap
 from src.feature_importance import plot_feature_importance_comparison
 from src.diagnostics import plot_learning_curve_dt, plot_validation_curve_dt
@@ -40,7 +40,8 @@ mae_dt = mean_absolute_error(y_test, y_pred_dt)
 rmse_dt = np.sqrt(mean_squared_error(y_test, y_pred_dt))
 r2_dt = r2_score(y_test, y_pred_dt)
 results.append({
-    'model': 'Decision Tree (GridSearch)',
+    #'model': 'Decision Tree (GridSearch)',
+    'model': 'Decision Tree (RandomSearch)',
     'MAE mean': mae_dt,
     'RMSE': rmse_dt,
     'R^2': r2_dt,
@@ -84,6 +85,24 @@ rf_importance = best_model_rf.feature_importances_
 # Wykres porównawczy
 plot_feature_importance_comparison(features, dt_importance, rf_importance)
 
+plot_single_feature_importance(
+    features,
+    best_model_dt.feature_importances_,
+    title="Ważność cech - Decision Tree",
+    save_path="results/feature_importance_dt.png",
+    csv_path="results/feature_importance_dt.csv",
+    top_n=20  # można usunąć jeśli chcesz pełną listę
+)
+
+# Wygeneruj wykres i zapisz CSV z ważnością cech - RF
+plot_single_feature_importance(
+    features,
+    best_model_rf.feature_importances_,
+    title="Ważność cech - Random Forest",
+    save_path="results/feature_importance_rf.png",
+    csv_path="results/feature_importance_rf.csv",
+    top_n=20
+)
 '''# Tylko Random Forest z RandomizedSearch
 result_rf_rand, best_model_rf_rand = train_random_forest_randomized(X_train, y_train)
 results.append(result_rf_rand)
