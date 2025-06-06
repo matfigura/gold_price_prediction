@@ -11,10 +11,13 @@ from ta.trend import (
 )
 from ta.volume import OnBalanceVolumeIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
+from src.analysis_feature import features_1, features_2, features_3
+
 
 def add_technical_indicators(df):
     df = df.copy()
 
+    # (tu wklejasz cały kod z obliczaniem wskaźników, tak jak było do tej pory)
     # 1️⃣ RSI (Relative Strength Index)
     df['rsi'] = RSIIndicator(close=df['Close'], window=14).rsi()
 
@@ -113,8 +116,7 @@ def add_technical_indicators(df):
     df['ichimoku_kijun'] = ichimoku.ichimoku_base_line()
     df['ichimoku_span_a'] = ichimoku.ichimoku_a()
     df['ichimoku_span_b'] = ichimoku.ichimoku_b()
-    # uwaga: IchimokuIndicator nie udostępnia metody lagging span w wersji 'ta',
-    # dlatego pomijamy tę linię.
+    # Uwaga: IchimokuIndicator nie ma w ta metod do lagging span, pomijamy
 
     # 1️⃣4️⃣ Usuń kolumny tymczasowe
     df.drop(
@@ -124,12 +126,23 @@ def add_technical_indicators(df):
 
     return df
 
+
 def prepare_data(
     file_path='data/gold_data.csv',
     include_midprice=True,
-    include_ohlc=False,                # teraz nie używamy surowego OHLC
-    include_technical_indicators=True
+    include_ohlc=False,
+    include_technical_indicators=True,
+    feature_set="features_3"      # <-- tutaj dodajemy parametr
 ):
+    """
+    Przygotowuje X_train, X_test, y_train, y_test, dates_test oraz listę nazw kolumn.
+    Dodatkowo obsługuje cztery zestawy cech:
+      - "all"          : wszystkie kolumny (mid_price + wszystkie wskaźniki)
+      - "features_1"   : lista z src.analysis_feature.features_1
+      - "features_2"   : lista z src.analysis_feature.features_2
+      - "features_3"   : lista z src.analysis_feature.features_3
+    """
+
     df = pd.read_csv(file_path, sep=';')
     # --- przetworzenie kolumny Date, target itd. ---
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
@@ -149,21 +162,43 @@ def prepare_data(
     df = df.drop(columns=['Open', 'High', 'Low', 'Close'], errors='ignore')
 
     # Usuwamy ewentualne NaN-y powstałe przy przesunięciach i wskaźnikach
-    df = df.dropna(subset=['target'])
-    df = df.dropna()
+    df = df.dropna(subset=['target']).dropna()
 
-    # Wyodrębniamy cechy X i cel y
-    X = df.drop(columns=['Date', 'target'], errors='ignore')
+    # Wyodrębniamy cechy X (DataFrame) i cel y
+    X_df = df.drop(columns=['Date', 'target'], errors='ignore').copy()
     y = df['target']
     dates = df['Date']
 
-    # Skalowanie i split – tak jak wcześniej
+    # ——————————————————————————————————————
+    # 🔹 Filtr kolumn wg wybranego feature_set
+    # ——————————————————————————————————————
+    if feature_set == "features_1":
+        chosen = features_1
+    elif feature_set == "features_2":
+        chosen = features_2
+    elif feature_set == "features_3":
+        chosen = features_3
+    else:
+        # "all" lub jakakolwiek inna wartość domyślnie = wszystkie kolumny
+        chosen = X_df.columns.tolist()
+
+    # Sprawdźmy, czy wszystkie wybrane kolumny faktycznie istnieją w X_df:
+    missing = [c for c in chosen if c not in X_df.columns]
+    if missing:
+        raise ValueError(f"Poniższe kolumny nie znalezione w danych: {missing}")
+
+    # Wycinamy jedynie te kolumny:
+    X_df = X_df[chosen].copy()
+
+    # ——————————————————————————————————————
+    # 🔹 Skalowanie i podział na train/test
+    # ——————————————————————————————————————
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    X_scaled = scaler.fit_transform(X_df)
 
     X_train, X_test, y_train, y_test, dates_train, dates_test = train_test_split(
         X_scaled, y, dates, test_size=0.2, random_state=42
     )
 
-    print("Liczba cech:", X.shape[1])
-    return X_train, X_test, y_train, y_test, dates_test, X.columns.tolist()
+    print(f"Liczba cech (zestaw \"{feature_set}\"): {X_df.shape[1]}")
+    return X_train, X_test, y_train, y_test, dates_test, X_df.columns.tolist()

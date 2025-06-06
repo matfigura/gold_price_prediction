@@ -2,8 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Zakładamy, że masz też import tej funkcji:
-from src.data_preprocessing import generate_ohlc_features  
+  
 
 def plot_correlation_heatmap(file_path='data/gold_data.csv', save_path='results/correlation_heatmap.png'):
     # Wczytanie danych z separatorem średnika
@@ -16,8 +15,6 @@ def plot_correlation_heatmap(file_path='data/gold_data.csv', save_path='results/
         df = df.sort_values('Date')
         df = df.drop(columns=['Date'])
 
-    # Dodanie cech
-    df = generate_ohlc_features(df, lags=3)
 
     # Usunięcie wierszy z brakami danych (po przesunięciach lagowych)
     df = df.dropna()

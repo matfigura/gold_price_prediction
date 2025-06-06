@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from src.data_preprocessing import add_technical_indicators
+from src.analysis_feature import features_1, features_2, features_3
 
 
 def create_lstm_data(
@@ -12,7 +13,8 @@ def create_lstm_data(
     include_ohlc=True,
     include_features=True,
     include_technical_indicators=True,
-    drop_raw_ohlc_after_feature_gen=False
+    drop_raw_ohlc_after_feature_gen=False,
+    feature_set="features_3"
 ):
     """
     Przygotowuje dane sekwencyjne dla LSTM, analogicznie do prepare_data(), z zachowaniem:
@@ -77,6 +79,24 @@ def create_lstm_data(
     # 📝 Zapis nazw cech
     feature_names = X_df.columns.tolist()
 
+        # ——————————————————————————————————————
+    # 🔹 Filtr kolumn wg feature_set (tak samo jak w prepare_data)
+    # ——————————————————————————————————————
+    if feature_set == "features_1":
+        chosen = features_1
+    elif feature_set == "features_2":
+        chosen = features_2
+    elif feature_set == "features_3":
+        chosen = features_3
+    else:
+        chosen = X_df.columns.tolist()   # czyli "all"
+
+    missing = [c for c in chosen if c not in X_df.columns]
+    if missing:
+        raise ValueError(f"Lack of columns {missing} in X_df for LSTM")
+
+    X_df = X_df[chosen].copy()
+
     # 🔢 Skalowanie X i y
     scaler_x = StandardScaler()
     scaler_y = StandardScaler()
@@ -101,4 +121,4 @@ def create_lstm_data(
         X_seq, y_seq, dates_seq, test_size=test_size, shuffle=False
     )
 
-    return X_train, X_test, y_train, y_test, dates_test, scaler_y, feature_names
+    return X_train, X_test, y_train, y_test, dates_test, scaler_y, chosen
