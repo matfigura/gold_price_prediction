@@ -1,35 +1,54 @@
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import make_scorer, mean_absolute_error
-import numpy as np
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 
-def train_random_forest(X_train, y_train):
-    param_grid = {
-        'n_estimators': [50, 100],
-        'max_depth': [5, 10, None],
-        'min_samples_split': [2, 5],
-        'min_samples_leaf': [1, 2]
-    }
-
-    base_model = RandomForestRegressor(random_state=42)
-    mae = make_scorer(mean_absolute_error)
-
-    grid_search = GridSearchCV(
-        estimator=base_model,
-        param_grid=param_grid,
-        scoring=mae,
-        cv=5,
-        n_jobs=-1
+def train_random_forest(X_train, y_train, random_state=42):
+    """
+    Proste strojenie lasu losowego:
+    - TimeSeriesSplit(5),
+    - jedna metryka: neg_mean_absolute_error,
+    - refit=True (po CV trenowanie na całym train).
+    Zwraca (result_dict, best_estimator).
+    """
+    base = RandomForestRegressor(
+        random_state=random_state,
+        n_jobs=-1,        # szybciej na wielu rdzeniach
+        bootstrap=True    # standard w RF
     )
 
-    grid_search.fit(X_train, y_train)
+    # Zwięzła i łatwa do obrony siatka:
+    param_distributions = {
+        "n_estimators": [100, 200, 400],
+        "max_depth": [5, 10, 20, None],
+        "min_samples_split": [2, 5, 10],
+        "min_samples_leaf": [1, 2, 4],
+        # losowy podzbiór cech przy podziale (dekorrelacja drzew):
+        "max_features": ["sqrt", "log2", None],
+        # (opcjonalnie, gdy danych jest dużo – ułamek próbek na drzewo)
+        # "max_samples": [None, 0.7, 0.9],
+    }
 
-    return {
-        'model': 'Random Forest (GridSearch)',
-        'MAE mean': grid_search.best_score_,
-        'Best params': grid_search.best_params_
-    }, grid_search.best_estimator_
+    tscv = TimeSeriesSplit(n_splits=5)
+
+    search = RandomizedSearchCV(
+        estimator=base,
+        param_distributions=param_distributions,
+        n_iter=40,                        # rozsądnie: szybko i skutecznie
+        scoring="neg_mean_absolute_error",# 1 metryka → prosto
+        cv=tscv,
+        random_state=random_state,
+        n_jobs=-1,
+        refit=True,
+        verbose=0,
+    )
+    search.fit(X_train, y_train)
+
+    result = {
+        "model": "Random Forest (RandomizedSearch, TSCV)",
+        "CV MAE": -search.best_score_,           # odwrócenie „neg_” → czytelny MAE
+        "Best params": search.best_params_,
+    }
+    return result, search.best_estimator_
+
 
 def predict_random_forest(best_model, X_test):
     return best_model.predict(X_test)
-

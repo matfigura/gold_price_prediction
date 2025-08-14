@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
 from src.data_preprocessing import add_technical_indicators
 from src.analysis_feature import features_1, features_2, features_3
 
@@ -17,12 +16,10 @@ def create_lstm_data(
     feature_set="features_3"
 ):
     """
-    Przygotowuje dane sekwencyjne dla LSTM, analogicznie do prepare_data(), z zachowaniem:
-    - mid_price zamiast OHLC
-    - te same wskaźniki techniczne co w add_technical_indicators
-    - możliwość generacji dodatkowych cech (generate_ohlc_features)
-    - tworzenie sekwencji dla LSTM (window_size)
-    - nieprzypadkowy split (shuffle=False)
+    Przygotowuje dane sekwencyjne dla LSTM z zachowaniem:
+    - dopasowania skalerów WYŁĄCZNIE na części treningowej (podział chrono),
+    - tworzenia sekwencji (window_size),
+    - braku tasowania (shuffle=False).
 
     Zwraca:
     X_train: ndarray (n_próbek, window_size, n_cech)
@@ -47,41 +44,38 @@ def create_lstm_data(
     if not all(col in df.columns for col in required_cols):
         raise ValueError(f"Brakuje wymaganych kolumn: {required_cols}")
 
-    # ➕ Dodanie mid_price analogicznie do prepare_data
+    # ➕ mid_price
     df['mid_price'] = (df['High'] + df['Low']) / 2
 
-    # ➕ Dodanie wskaźników technicznych
+    # ➕ Wskaźniki techniczne
     if include_technical_indicators:
         df = add_technical_indicators(df)
 
-    # 🔧 Generacja dodatkowych cech na bazie OHLC (jeśli potrzebne)
+    # 🔧 (opcjonalnie) dodatkowe cechy na bazie OHLC
     if include_features:
-        # Tu możesz podpiąć swoją funkcję generate_ohlc_features (np. z niższej wersji)
-        # Przykład (jeśli masz): df = generate_ohlc_features(df, lags=3)
-        pass  # usuń pass i wstaw wywołanie generate_ohlc_features, jeśli używasz
+        # np. df = generate_ohlc_features(df, lags=3)
+        pass
 
-    # 🎯 Tworzenie targetu zanim usuniemy kolumny Close
+    # 🎯 Target = Close przesunięty o 1 (przewidujemy jutrzejsze Close)
     df['target'] = df['Close'].shift(-1)
 
-    # 🧹 Usunięcie NaN w kolumnie target i w wskaźnikach
+    # 🧹 Usunięcie NaN (po wskaźnikach i shifcie)
     df = df.dropna(subset=['target']).dropna()
 
-    # 🧹 Usunięcie surowego OHLC, jeśli wybrano drop_raw_ohlc_after_feature_gen lub include_ohlc=False
+    # 🧹 Rezygnacja z surowego OHLC, jeśli wybrano
     if not include_ohlc or drop_raw_ohlc_after_feature_gen:
         df = df.drop(columns=['Open', 'High', 'Low', 'Close'], errors='ignore')
 
-    # ❌ Usunięcie kolumn, które nie są cechami
+    # 🧱 Budowa macierzy cech i wektorów docelowych
     to_drop = ['Date', 'target']
     X_df = df.drop(columns=to_drop, errors='ignore').copy()
     y = df['target'].values
     dates = df['Date'].values if 'Date' in df.columns else np.arange(len(df))
 
-    # 📝 Zapis nazw cech
+    # 🔖 Zapamiętanie nazw cech
     feature_names = X_df.columns.tolist()
 
-        # ——————————————————————————————————————
-    # 🔹 Filtr kolumn wg feature_set (tak samo jak w prepare_data)
-    # ——————————————————————————————————————
+    # 🔹 Filtr kolumn wg feature_set
     if feature_set == "features_1":
         chosen = features_1
     elif feature_set == "features_2":
@@ -89,7 +83,7 @@ def create_lstm_data(
     elif feature_set == "features_3":
         chosen = features_3
     else:
-        chosen = X_df.columns.tolist()   # czyli "all"
+        chosen = X_df.columns.tolist()   # "all"
 
     missing = [c for c in chosen if c not in X_df.columns]
     if missing:
@@ -97,16 +91,27 @@ def create_lstm_data(
 
     X_df = X_df[chosen].copy()
 
-    # 🔢 Skalowanie X i y
-    scaler_x = StandardScaler()
-    scaler_y = StandardScaler()
-    X_scaled = scaler_x.fit_transform(X_df)
-    y_scaled = scaler_y.fit_transform(y.reshape(-1, 1)).flatten()
+    # ─────────────────────────────────────────────
+    # 🔻 PODZIAŁ „PO CZASIE” + SKALOWANIE TYLKO NA TRAIN
+    # ─────────────────────────────────────────────
+    n = len(X_df)
+    split_idx = int(n * (1 - test_size))
+    if split_idx <= 0:
+        raise ValueError("Za mało danych do wyznaczenia części treningowej.")
+    if split_idx <= window_size:
+        raise ValueError(
+            f"Okno ({window_size}) jest zbyt duże względem części treningowej ({split_idx}). "
+            f"Zmień window_size lub test_size."
+        )
 
-    # 📊 Generowanie sekwencji dla LSTM
-    X_seq = []
-    y_seq = []
-    dates_seq = []
+    scaler_x = StandardScaler().fit(X_df.iloc[:split_idx])                 # fit tylko na train
+    scaler_y = StandardScaler().fit(y[:split_idx].reshape(-1, 1))          # fit tylko na train (y)
+
+    X_scaled = scaler_x.transform(X_df)
+    y_scaled = scaler_y.transform(y.reshape(-1, 1)).ravel()
+
+    # 📊 Generowanie sekwencji dla LSTM (na CAŁOŚCI danych, ale granica dzielenia niżej)
+    X_seq, y_seq, dates_seq = [], [], []
     for i in range(len(X_scaled) - window_size):
         X_seq.append(X_scaled[i:i + window_size])
         y_seq.append(y_scaled[i + window_size])
@@ -116,9 +121,17 @@ def create_lstm_data(
     y_seq = np.array(y_seq)
     dates_seq = np.array(dates_seq)
 
-    # 🏷️ Podział na zbiór treningowy i testowy (bez mieszania)
-    X_train, X_test, y_train, y_test, dates_train, dates_test = train_test_split(
-        X_seq, y_seq, dates_seq, test_size=test_size, shuffle=False
-    )
+    # 🧱 Granica między train/test w przestrzeni SEKWENCJI:
+    # jeżeli output na indeksie (i + window_size) == split_idx,
+    # to pierwszy indeks sekwencji dla TEST to i = split_idx - window_size
+    boundary = split_idx - window_size
+    if boundary <= 0:
+        raise ValueError(
+            f"Granica sekwencji ({boundary}) niepoprawna. "
+            f"Zwiększ liczbę danych treningowych lub zmniejsz window_size."
+        )
+
+    X_train, y_train, X_test, y_test = X_seq[:boundary], y_seq[:boundary], X_seq[boundary:], y_seq[boundary:]
+    dates_test = dates_seq[boundary:]
 
     return X_train, X_test, y_train, y_test, dates_test, scaler_y, chosen

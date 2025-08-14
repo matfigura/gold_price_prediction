@@ -37,24 +37,30 @@ def build_lstm_model(input_shape, units_1=128, units_2=32, dropout_rate=0.2):
 # ——————————————————————————————————————————
 # 2) Funkcja trenująca (build + fit)
 # ——————————————————————————————————————————
-def train_lstm(X_train, y_train, X_val, y_val, epochs=50, batch_size=32):
-    """
-    Tworzy model wywołując build_lstm_model, a następnie trenuje
-    (X_train, y_train) z walidacją (X_val, y_val) i EarlyStopping.
-    Zwraca (model, history).
-    """
-    # Budujemy model na podstawie kształtu sekwencji:
+def train_lstm(X_train, y_train, X_val=None, y_val=None, epochs=50, batch_size=32, val_split=0.1):
     model = build_lstm_model((X_train.shape[1], X_train.shape[2]))
-
     early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-    history = model.fit(
-        X_train, y_train,
-        validation_data=(X_val, y_val),
-        epochs=epochs,
-        batch_size=batch_size,
-        callbacks=[early_stop],
-        verbose=2
-    )
+
+    if X_val is not None and y_val is not None:
+        history = model.fit(
+            X_train, y_train,
+            validation_data=(X_val, y_val),
+            epochs=epochs,
+            batch_size=batch_size,
+            callbacks=[early_stop],
+            verbose=2,
+            shuffle=False  # <- dla szeregów
+        )
+    else:
+        history = model.fit(
+            X_train, y_train,
+            validation_split=val_split,
+            epochs=epochs,
+            batch_size=batch_size,
+            callbacks=[early_stop],
+            verbose=2,
+            shuffle=False  # <- dla szeregów
+        )
     return model, history
 
 
