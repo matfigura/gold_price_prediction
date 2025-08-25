@@ -1,16 +1,17 @@
-from __future__ import annotations
 
-from typing import Tuple, Union, Dict, Optional, Any
+from typing import Tuple, Union, Dict, Any, Optional
+import inspect
 import numpy as np
 
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from sklearn.metrics import make_scorer, mean_squared_error
+from xgboost import XGBRegressor
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Scoring + refit (kompatybilne z Twoim mainem; identyczna logika jak w DT)
+# Scoring + refit (kompatybilne z Twoim mainem)
 # ─────────────────────────────────────────────────────────────────────────────
-def _scoring_and_refit(metric: str) -> Tuple[Union[str, Dict[str, object]], str]:
+def _scoring_and_refit(metric: str) -> Tuple[Union[str, Dict[str, Any]], str]:
     rmse = make_scorer(lambda yt, yp: np.sqrt(mean_squared_error(yt, yp)),
                        greater_is_better=False)
     if metric == "mae":
@@ -19,7 +20,7 @@ def _scoring_and_refit(metric: str) -> Tuple[Union[str, Dict[str, object]], str]
         return {"rmse": rmse}, "rmse"
     if metric == "r2":
         return "r2", "r2"
-    # multi – logujemy kilka metryk, refit po MAE (jak w DT/XGB)
+    # multi: logujemy MAE+RMSE+R2, refit po MAE
     return {
         "neg_mean_absolute_error": "neg_mean_absolute_error",
         "r2": "r2",
@@ -28,7 +29,7 @@ def _scoring_and_refit(metric: str) -> Tuple[Union[str, Dict[str, object]], str]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tworzenie celu (to samo API co w DT/XGB)
+# Transformacja celu (jak w DT/RF)
 # ─────────────────────────────────────────────────────────────────────────────
 def _make_target(
     y: np.ndarray, X: np.ndarray,
@@ -42,7 +43,7 @@ def _make_target(
     - "delta_over_atr"  : (y - Close_t) / ATR_t
     - "return"          : (y - Close_t) / Close_t
     """
-    if target_transform == "level" or target_transform is None:
+    if target_transform == "level":
         return y
 
     if close_idx is None:
@@ -55,7 +56,7 @@ def _make_target(
 
     if target_transform == "delta_over_atr":
         if atr_idx is None:
-            raise ValueError("target_transform='delta_over_atr' wymaga atr_idx (np. 'atr_14').")
+            raise ValueError("target_transform='delta_over_atr' wymaga atr_idx (kolumna 'atr_14' w X).")
         atr_t = X[:, atr_idx]
         return (y - close_t) / (atr_t + 1e-8)
 
@@ -66,9 +67,9 @@ def _make_target(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tuning RF z TimeSeriesSplit + gap; tryb fast (analogicznie do DT)
+# Krok 1 – tuning bez ES (na tej samej przestrzeni celu)
 # ─────────────────────────────────────────────────────────────────────────────
-def _tune_rf(
+def _tune_xgb_without_es(
     X_train, y_train,
     cv_splits: int,
     cv_gap: int,
@@ -76,44 +77,47 @@ def _tune_rf(
     metric: str,
     random_state: int,
     fast: bool,
-    target_transform: str,
+    use_residual_target: bool,          # zachowane dla wstecznej zgodności
     close_idx: Optional[int],
+    target_transform: str,
     atr_idx: Optional[int]
 ):
-    # [spójnie z DT] tuning na tej samej przestrzeni celu, co finalny fit
-    y_tune = _make_target(y_train, X_train, target_transform, close_idx, atr_idx)
-
-    base = RandomForestRegressor(
+    # BEZ early_stopping_rounds – ES dopiero w retrenie
+    base = XGBRegressor(
+        objective="reg:squarederror",
+        tree_method="hist",
+        n_estimators=800 if fast else 1200,
+        learning_rate=0.08 if fast else 0.05,
         random_state=random_state,
         n_jobs=-1,
-        bootstrap=True,
-        oob_score=False
+        verbosity=0
     )
 
     if fast:
-        # ciaśniejsza siatka + mniej drzew dla szybkich testów
         param_distributions = {
-            "n_estimators": [200, 400],
-            "max_depth": [5, 10, 20, None],
-            "min_samples_split": [2, 5, 10],
-            "min_samples_leaf": [1, 2, 4, 8],
-            "max_features": ["sqrt", 0.6, 0.8],
-            "max_samples": [None, 0.7, 0.9],   # tylko gdy bootstrap=True
+            "max_depth": [4, 6, 8],
+            "subsample": [0.7, 0.9],
+            "colsample_bytree": [0.6, 0.8],
+            "reg_alpha": [0, 0.1],
+            "reg_lambda": [1, 5],
+            "min_child_weight": [1, 3],
+            "gamma": [0, 1],
         }
         cv_splits = max(3, min(cv_splits, 3))
-        n_iter    = min(n_iter, 30)
+        n_iter    = min(n_iter, 20)
     else:
         param_distributions = {
-            "n_estimators": [400, 800, 1200],
-            "max_depth": [5, 10, 20, 40, None],
-            "min_samples_split": [2, 5, 10, 20],
-            "min_samples_leaf": [1, 2, 4, 8, 16],
-            "max_features": [None, "sqrt", "log2", 0.5, 0.7],
-            "max_samples": [None, 0.7, 0.9],    # jeśli bootstrap=True
+            "max_depth": [3, 5, 7, 10, 15],
+            "learning_rate": [0.03, 0.05, 0.08],
+            "subsample": [0.6, 0.8, 1.0],
+            "colsample_bytree": [0.5, 0.7, 0.9],
+            "reg_alpha": [0, 0.1, 1, 10],
+            "reg_lambda": [1, 5, 10],
+            "min_child_weight": [1, 3, 5],
+            "gamma": [0, 1, 3],
         }
 
-    scoring, refit = _scoring_and_refit(metric)
-
+    scoring, refit_metric = _scoring_and_refit(metric)
     try:
         tscv = TimeSeriesSplit(n_splits=cv_splits, gap=cv_gap)
     except TypeError:
@@ -124,22 +128,23 @@ def _tune_rf(
         param_distributions=param_distributions,
         n_iter=n_iter,
         scoring=scoring,
-        refit=refit,
+        refit=refit_metric,
         cv=tscv,
         random_state=random_state,
         n_jobs=-1,
         verbose=1,
-        return_train_score=False
+        return_train_score=False,
+        error_score="raise"
     )
-    search.fit(X_train, y_tune)
+
+    # Tuning na tej samej transformacji celu co późniejszy retrain
+    y_train_tune = _make_target(y_train, X_train, target_transform, close_idx, atr_idx)
+    search.fit(X_train, y_train_tune)
 
     cvres = search.cv_results_
-
-    def _safe(name): 
-        return float(cvres[name][search.best_index_]) if name in cvres else None
-
+    def _safe(name): return float(cvres[name][search.best_index_]) if name in cvres else None
     result = {
-        "model": "Random Forest (RandomizedSearch, TSCV)",
+        "model": "XGBoost (RandomizedSearch, TSCV, no-ES)",
         "CV MAE": -_safe("mean_test_neg_mean_absolute_error") if "mean_test_neg_mean_absolute_error" in cvres else None,
         "CV RMSE": -_safe("mean_test_rmse") if "mean_test_rmse" in cvres else None,
         "CV R2": _safe("mean_test_r2") if "mean_test_r2" in cvres else None,
@@ -149,28 +154,88 @@ def _tune_rf(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Główny wrapper: tuning → finalny fit na całym train (spójnie z DT)
+# Krok 2 – retrain z ES (na tym samym celu)
 # ─────────────────────────────────────────────────────────────────────────────
-def train_random_forest(
+def _fit_xgb_with_es(
     X_train, y_train,
-    random_state: int = 42,
+    best_params: Dict[str, Any],
+    val_fraction: float,
+    early_stopping_rounds: int,
+    metric: str,
+    random_state: int,
+    target_transform: str,
+    close_idx: Optional[int],
+    atr_idx: Optional[int]
+):
+    if not (0 < val_fraction < 0.5):
+        raise ValueError("val_fraction musi być w (0, 0.5), np. 0.2")
+
+    n = len(X_train)
+    split_idx = int(n * (1 - val_fraction))
+    if split_idx <= 0 or split_idx >= n:
+        raise ValueError("Za mało danych do wydzielenia walidacji (ES).")
+
+    X_tr, X_val = X_train[:split_idx], X_train[split_idx:]
+    y_tr_raw, y_val_raw = y_train[:split_idx], y_train[split_idx:]
+
+    # Uczenie na tej samej transformacji co tuning
+    y_tr  = _make_target(y_tr_raw,  X_tr,  target_transform, close_idx, atr_idx)
+    y_val = _make_target(y_val_raw, X_val, target_transform, close_idx, atr_idx)
+
+    est = XGBRegressor(
+        objective="reg:squarederror",
+        tree_method="hist",
+        n_estimators=max(1200, best_params.get("n_estimators", 1200)),
+        early_stopping_rounds=int(early_stopping_rounds),
+        random_state=random_state,
+        n_jobs=-1,
+        verbosity=0,
+        **best_params
+    )
+
+    fit_params: Dict[str, Any] = {"eval_set": [(X_val, y_val)]}
+    fit_sig = set(inspect.signature(est.fit).parameters.keys())
+    if "eval_metric" in fit_sig:
+        fit_params["eval_metric"] = "rmse" if metric in ("rmse", "r2", "multi") else "mae"
+    if "verbose" in fit_sig:
+        fit_params["verbose"] = False
+
+    est.fit(X_tr, y_tr, **fit_params)
+
+    # meta do rekonstrukcji poziomu
+    setattr(est, "_target_transform", target_transform)
+    setattr(est, "_close_idx", close_idx)
+    setattr(est, "_atr_idx", atr_idx)
+
+    return est
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Publiczny wrapper
+# ─────────────────────────────────────────────────────────────────────────────
+def train_xgboost(
+    X_train, y_train,
     cv_splits: int = 5,
-    n_iter: int = 60,
+    random_state: int = 42,
+    n_iter: int = 80,
     metric: str = "multi",
     cv_gap: int = 0,
+    val_fraction: Optional[float] = 0.2,
+    early_stopping_rounds: int = 200,
     fast: bool = False,
-    target_transform: str = "delta",      # "level" | "delta" | "delta_over_atr" | "return"
+    use_residual_target: bool = True,      # dla zgodności ze starym wywołaniem (nieużywane logicznie)
     close_idx: Optional[int] = None,
+    target_transform: str = "delta",       # "level" | "delta" | "delta_over_atr" | "return"
     atr_idx: Optional[int] = None
 ):
-    # walidacja jak w DT
+    # walidacja transformacji
     if target_transform in ("delta", "return", "delta_over_atr") and close_idx is None:
         raise ValueError(f"target_transform='{target_transform}' wymaga close_idx.")
     if target_transform == "delta_over_atr" and atr_idx is None:
         raise ValueError("target_transform='delta_over_atr' wymaga atr_idx (ATR w cechach).")
 
-    # 1) tuning (CV na tym samym celu co finalny fit)
-    tune_res, best_params = _tune_rf(
+    # 1) tuning bez ES
+    tune_res, best_params = _tune_xgb_without_es(
         X_train, y_train,
         cv_splits=cv_splits,
         cv_gap=cv_gap,
@@ -178,67 +243,73 @@ def train_random_forest(
         metric=metric,
         random_state=random_state,
         fast=fast,
+        use_residual_target=use_residual_target,
+        close_idx=close_idx,
+        target_transform=target_transform,
+        atr_idx=atr_idx
+    )
+
+    # 2) retrain z ES
+    if val_fraction is None:
+        raise ValueError("val_fraction nie może być None przy trenowaniu z ES.")
+    best_est = _fit_xgb_with_es(
+        X_train, y_train,
+        best_params=best_params,
+        val_fraction=float(val_fraction),
+        early_stopping_rounds=early_stopping_rounds,
+        metric=metric,
+        random_state=random_state,
         target_transform=target_transform,
         close_idx=close_idx,
         atr_idx=atr_idx
     )
 
-    # 2) finalny fit na całym train (na transformowanym celu)
-    best_rf = RandomForestRegressor(
-        random_state=random_state,
-        n_jobs=-1,
-        bootstrap=True,
-        oob_score=False,
-        **best_params
-    )
-    y_final = _make_target(y_train, X_train, target_transform, close_idx, atr_idx)
-    best_rf.fit(X_train, y_final)
-
-    # meta do rekonstrukcji poziomu w predykcji
-    setattr(best_rf, "_target_transform", target_transform)
-    setattr(best_rf, "_close_idx", close_idx)
-    setattr(best_rf, "_atr_idx", atr_idx)
-
-    # scalony raport
     result = {
-        "model": "Random Forest (RandomizedSearch, TSCV)",
+        "model": "XGBoost (Tuning no-ES → Retrain with ES, TSCV)",
         "CV MAE": tune_res.get("CV MAE"),
         "CV RMSE": tune_res.get("CV RMSE"),
         "CV R2": tune_res.get("CV R2"),
         "Best params": tune_res.get("Best params"),
         "Target transform": target_transform,
     }
-    return result, best_rf
+    return result, best_est
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Predykcja: uwzględnia transformację celu (rekonstrukcja poziomu)
+# Predykcja + rekonstrukcja poziomu (jak w DT/RF)
 # ─────────────────────────────────────────────────────────────────────────────
-def predict_random_forest(model: RandomForestRegressor, X: Any) -> np.ndarray:
-    yhat_base = model.predict(X)
+def predict_xgboost(model: XGBRegressor, X: Any) -> np.ndarray:
+    bi = getattr(model, "best_iteration_", None)
+    if isinstance(bi, int) and bi >= 0:
+        try:
+            yhat = model.predict(X, iteration_range=(0, bi + 1))  # XGB 2.x
+        except TypeError:
+            yhat = model.predict(X, ntree_limit=bi + 1)            # fallback starsze API
+    else:
+        yhat = model.predict(X)
 
     tform    = getattr(model, "_target_transform", "level")
     close_ix = getattr(model, "_close_idx", None)
     atr_ix   = getattr(model, "_atr_idx", None)
 
-    if tform == "level" or tform is None:
-        return yhat_base
+    if tform == "level":
+        return yhat
 
     if close_ix is None:
-        raise RuntimeError("Brak _close_idx do rekonstrukcji poziomu (uczenie residualne).")
+        raise RuntimeError("Brak _close_idx do rekonstrukcji poziomu.")
 
     close_t = X[:, close_ix]
 
     if tform == "delta":
-        return close_t + yhat_base
+        return close_t + yhat
 
     if tform == "delta_over_atr":
         if atr_ix is None:
-            raise RuntimeError("Brak _atr_idx do rekonstrukcji (delta_over_atr).")
+            raise RuntimeError("Brak _atr_idx do rekonstrukcji poziomu (delta_over_atr).")
         atr_t = X[:, atr_ix]
-        return close_t + yhat_base * atr_t
+        return close_t + yhat * atr_t
 
     if tform == "return":
-        return close_t * (1.0 + yhat_base)
+        return close_t * (1.0 + yhat)
 
-    return yhat_base
+    return yhat

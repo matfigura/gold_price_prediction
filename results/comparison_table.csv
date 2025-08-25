@@ -1,7 +1,2 @@
 model,MAE mean,RMSE,R^2,Best params
-"Decision Tree (RandomizedSearch, TSCV)",12.17,17.331,0.999,"{'min_samples_split': 5, 'min_samples_leaf': 2, 'max_features': None, 'max_depth': 7, 'ccp_alpha': 0.1}"
-"Random Forest (RandomizedSearch, TSCV)",11.344,16.703,0.999,"{'n_estimators': 200, 'min_samples_split': 5, 'min_samples_leaf': 4, 'max_features': None, 'max_depth': 10}"
-XGBoost (GridSearch),161.287,200.729,0.836,"{'colsample_bytree': 0.8, 'learning_rate': 0.001, 'max_depth': 3, 'n_estimators': 1000, 'subsample': 0.8}"
-XGBoost (Early Stopping),11.981,17.767,0.999,"custom (n_estimators=10000, lr=0.001, early_stopping=50)"
-"MLPRegressor (GridSearch, scaled)",29.02,39.656,0.994,"{'mlp__activation': 'relu', 'mlp__alpha': 0.001, 'mlp__hidden_layer_sizes': (100,), 'mlp__learning_rate': 'adaptive'}"
-LSTM,212.669,275.932,0.087,"custom (LSTM(64), dropout=0.2, adam)"
+"XGBoost (Tuning no-ES → Retrain with ES, TSCV)",13.49883,18.33684,0.99597,"{'subsample': 0.7, 'reg_lambda': 5, 'reg_alpha': 0, 'min_child_weight': 1, 'max_depth': 6, 'gamma': 1, 'colsample_bytree': 0.6}"
