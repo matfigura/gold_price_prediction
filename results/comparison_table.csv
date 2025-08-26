@@ -1,2 +1,2 @@
 model,MAE mean,RMSE,R^2,Best params
-"XGBoost (Tuning no-ES → Retrain with ES, TSCV)",13.49883,18.33684,0.99597,"{'subsample': 0.7, 'reg_lambda': 5, 'reg_alpha': 0, 'min_child_weight': 1, 'max_depth': 6, 'gamma': 1, 'colsample_bytree': 0.6}"
+"MLPRegressor (RandomizedSearch, scaled, TSCV fast)",18.46036,23.66207,0.99329,"{'mlp__learning_rate_init': 0.003, 'mlp__hidden_layer_sizes': (64,), 'mlp__batch_size': 128, 'mlp__alpha': 1e-06, 'mlp__activation': 'relu'}"

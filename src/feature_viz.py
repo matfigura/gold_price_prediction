@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 from src.viz.plots import (
-    plot_tree_impurity_importance,
-    plot_permutation_importance,
-    plot_corr_heatmap,
-    analyze_model_features,
+    permutation_importance_generic,
+    plot_permutation_importance_generic,
+    plot_model_permutation_importance,
+    analyze_permutation_only,
     XGBLevelWrapper,
+    analyze_lstm_permutation_only,
 )
 
 __all__ = [
-    "plot_tree_impurity_importance",
-    "plot_permutation_importance",
-    "plot_corr_heatmap",
-    "analyze_model_features",
+    "permutation_importance_generic",
+    "plot_permutation_importance_generic",
+    "plot_model_permutation_importance",
+    "analyze_permutation_only",
     "XGBLevelWrapper",
+    "analyze_lstm_permutation_only",
 ]
