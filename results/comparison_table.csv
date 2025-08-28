@@ -1,2 +1,2 @@
 model,MAE mean,RMSE,R^2,Best params
-"MLPRegressor (RandomizedSearch, scaled, TSCV fast)",18.46036,23.66207,0.99329,"{'mlp__learning_rate_init': 0.003, 'mlp__hidden_layer_sizes': (64,), 'mlp__batch_size': 128, 'mlp__alpha': 1e-06, 'mlp__activation': 'relu'}"
+"MLPRegressor (RandomizedSearch, scaled, TSCV)",14.10991,18.97117,0.99569,"{'mlp__learning_rate_init': 0.0005, 'mlp__hidden_layer_sizes': (64,), 'mlp__batch_size': 32, 'mlp__alpha': 0.001, 'mlp__activation': 'relu'}"

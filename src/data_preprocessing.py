@@ -2,10 +2,81 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 
-from ta.momentum import RSIIndicator, StochasticOscillator
+from ta.momentum import RSIIndicator, StochasticOscillator, WilliamsRIndicator
 from ta.trend import MACD, EMAIndicator, SMAIndicator, CCIIndicator, ADXIndicator
 from ta.volume import OnBalanceVolumeIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
+
+# ───────────────────────────────────────────────────────────────
+# WMA: ważona średnia krocząca (rosnące wagi 1..n)
+# ───────────────────────────────────────────────────────────────
+def weighted_moving_average(s: pd.Series, window: int) -> pd.Series:
+    w = np.arange(1, window + 1)
+    return s.rolling(window).apply(lambda x: np.dot(x, w) / w.sum(), raw=True)
+
+# ───────────────────────────────────────────────────────────────
+# Zestaw 'praca' – wskaźniki z artykułu (okna wg opisu)
+# ───────────────────────────────────────────────────────────────
+PRACA_CFG = dict(
+    sma_n=10,           # Simple 10-day MA
+    wma_n=14,           # Weighted 14-day MA
+    mom_n=10,           # Momentum: Ct - C_{t-n+1} (tu n=10)
+    stoch_n=14,         # %K,%D (okno 14), smoothing 3
+    stoch_smooth=3,
+    rsi_n=14,           # RSI(14)
+    wr_n=14,            # Williams %R(14)
+    macd_fast=12,       # MACD(12,26,9) — współczynniki 0.15/0.075 ↔ okna 12/26
+    macd_slow=26,
+    macd_signal=9,
+    cci_n=20            # CCI(20), constant=0.015
+)
+
+def add_indicators_praca(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    # 1) SMA(10)
+    df['sma_10'] = SMAIndicator(close=df['Close'], window=PRACA_CFG['sma_n']).sma_indicator()
+
+    # 2) WMA(14)
+    df['wma_14'] = weighted_moving_average(df['Close'], PRACA_CFG['wma_n'])
+
+    # 3) Momentum: Ct - C_{t-n+1}
+    n = PRACA_CFG['mom_n']
+    df['mom_10'] = df['Close'] - df['Close'].shift(n - 1)
+
+    # 4-5) Stochastic %K/%D (14; smoothing=3)
+    stoch = StochasticOscillator(
+        high=df['High'], low=df['Low'], close=df['Close'],
+        window=PRACA_CFG['stoch_n'], smooth_window=PRACA_CFG['stoch_smooth']
+    )
+    df['stoch_k_14'] = stoch.stoch()
+    df['stoch_d_14'] = stoch.stoch_signal()
+
+    # 6) RSI(14)
+    df['rsi_14'] = RSIIndicator(close=df['Close'], window=PRACA_CFG['rsi_n']).rsi()
+
+    # 7) Williams %R(14)
+    df['wr_14'] = WilliamsRIndicator(
+        high=df['High'], low=df['Low'], close=df['Close'], lbp=PRACA_CFG['wr_n']
+    ).williams_r()
+
+    # 8) MACD(12,26,9)
+    macd = MACD(
+        close=df['Close'],
+        window_fast=PRACA_CFG['macd_fast'],
+        window_slow=PRACA_CFG['macd_slow'],
+        window_sign=PRACA_CFG['macd_signal']
+    )
+    df['macd'] = macd.macd()
+    df['macd_signal'] = macd.macd_signal()
+
+    # 9) CCI(20) z constant=0.015
+    df['cci_20'] = CCIIndicator(
+        high=df['High'], low=df['Low'], close=df['Close'],
+        window=PRACA_CFG['cci_n'], constant=0.015
+    ).cci()
+
+    return df
 
 
 # ───────────────────────────────────────────────────────────────
@@ -140,93 +211,62 @@ def prepare_data(file_path: str = 'data/gold_data.csv',
     if dataset_type == "ohlc":
         X_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
 
-    elif dataset_type == "ta_lags_2":
-        # Odchudzony zestaw: rdzeń + po 1 reprezentancie z rodzin
-        # - trend/momentum: macd_diff (rdzeń)
-        # - pozycja/zmienność: bb_percent (rdzeń), atr_14 (reprezentant zmienności)
-        # - lag/zwrot: close_lag_1, ret_5d (po 1 szt.)
-        # - wolumen: Volume (najprostszy reprezentant)
-        tmp = add_core_indicators(df)
-        tmp = add_basic_lags(tmp, lag_list=(1,), add_returns=True)
-        X_df = tmp[[
-            'Close',           # potrzebne do rekonstrukcji przy uczeniu na delcie
-            'Volume',          # 1 reprezentant wolumenu
-            'macd_diff',       # rdzeń (trend/momentum)
-            'bb_percent',      # rdzeń (pozycja względem pasm)
-            'atr_14',          # 1 reprezentant zmienności
-            'close_lag_1',     # 1 krótki lag
-            'ret_5d',          # 1 zwrot o średnim horyzoncie
-            'rsi_14'
-        ]].copy()
-
-    elif dataset_type == "ta_lags_core":
-        # Minimalny rdzeń do testu: tylko cechy, które naprawdę „niosą” wynik
-        # + technicznie niezbędne kolumny (Close, ewentualnie atr_14).
-        tmp = add_core_indicators(df)
-        # lags/returns nie są tu potrzebne; zostawiamy tylko rdzeń + Close (+ ATR)
-        # jeśli chcesz, możesz dodać lag_1, ale intencją jest maksymalny minimalizm.
-        X_df = tmp[[
-            'Close',       # niezbędne do rekonstrukcji poziomu przy delcie
-            'Volume',   # kluczowe w obu miarach ważności
-            'atr_14',      # zostawiamy, bo bywa potrzebny dla delta_over_atr
-            #'rsi_14'
-        ]].copy()
-
-    elif dataset_type == "ta_lags":
-        tmp = add_core_indicators(df)
-        tmp = add_basic_lags(tmp, lag_list=(1, 5, 10), add_returns=True)
-        X_df = tmp[[
-            'Close', 'Volume',
-            'macd_diff', 'rsi_14', 'bb_percent', 'bb_width', 'atr_14',
-            'sma_20', 'ema_12', 'cci_20', 'adx_14',
-            'close_lag_1', 'close_lag_5', 'close_lag_10',
-            'ret_1d', 'ret_5d'
-        ]].copy()
 
     elif dataset_type == "mixed":
-        tmp = add_core_indicators(df)
-        tmp = add_basic_lags(tmp, lag_list=(1, 5, 10), add_returns=True)
+    # połączenie OHLC oraz rdzenia wskaźników z literatury
+        tmp = add_indicators_praca(df).copy()
+    # dołóż surowe kolumny z df
+        tmp[['Open', 'High', 'Low']] = df[['Open', 'High', 'Low']]
         X_df = tmp[[
-            'Open', 'High', 'Low', 'Close', 'Volume',
-            'macd_diff', 'rsi_14', 'bb_percent', 'bb_width', 'atr_14',
-            'sma_20', 'ema_12', 'cci_20', 'adx_14',
-            'close_lag_1', 'close_lag_5', 'close_lag_10',
-            'ret_1d', 'ret_5d'
+            'Open', 'High', 'Low',    # OHLC (bez duplikowania Close)
+            'Close', 'Volume',        # kotwice
+            'sma_10', 'wma_14',
+            'mom_10',
+            'stoch_k_14', 'stoch_d_14',
+            'rsi_14', 'wr_14',
+            'macd', 'macd_signal',
+            'cci_20'
         ]].copy()
 
-    elif dataset_type == "ta_lags_plus":
-        # bogatszy preset pod nieliniowe modele (i test na drzewach)
-        tmp = add_core_indicators(df)
-        tmp = add_basic_lags(tmp, lag_list=(1, 2, 3, 5, 10, 20), add_returns=True)
-        tmp = add_rolling_blocks(tmp)
-        tmp = add_calendar_cyclical(tmp)
 
-        # selekcja sensownej puli (unikamy setek kolumn)
+    elif dataset_type == "ta_research_set":
+        # wskaźniki z artykułu + 'Close' i 'Volume' (przydają się m.in. dla trybu 'delta')
+        tmp = add_indicators_praca(df)
         X_df = tmp[[
-            # kotwice cenowe i wolumenowe
-            'Close', 'Volume',
-
-            # rdzeń TA
-            'macd_diff', 'rsi_14', 'bb_percent', 'bb_width', 'atr_14',
-            'sma_20', 'ema_12', 'cci_20', 'adx_14',
-            'obv', 'vol_ratio_20',
-
-            # lagi i zwroty
-            'close_lag_1', 'close_lag_2', 'close_lag_3',
-            'close_lag_5', 'close_lag_10', 'close_lag_20',
-            'ret_1d', 'ret_5d', 'ret_10d',
-
-            # rolling stat / zmienność / zasięgi
-            'ret_std_5', 'ret_std_10', 'ret_std_20',
-            'roll_mean_5', 'roll_mean_10', 'roll_mean_20',
-            'roll_std_5', 'roll_std_10', 'roll_std_20',
-            'high_low_range', 'close_open_ratio',
-
-            # kalendarz (cykliczne)
-            'dow_sin', 'dow_cos',
+            'Close', 'Volume',        # kotwice
+            'sma_10', 'wma_14',       # MA
+            'mom_10',                 # momentum
+            'stoch_k_14', 'stoch_d_14',
+            'rsi_14', 'wr_14',
+            'macd', 'macd_signal',
+            'cci_20'
         ]].copy()
+
+    elif dataset_type == "ta_research_set_RF":
+        # wskaźniki z artykułu + 'Close' i 'Volume' (przydają się m.in. dla trybu 'delta')
+        tmp = add_indicators_praca(df)
+        X_df = tmp[[
+            'Close', 'Volume', 'macd'
+        ]].copy()
+
+    elif dataset_type == "ta_research_set_DT":
+        # wskaźniki z artykułu + 'Close' i 'Volume' (przydają się m.in. dla trybu 'delta')
+        tmp = add_indicators_praca(df)
+        X_df = tmp[[
+            'Close', 'Volume', 'cci_20'
+        ]].copy()
+
+    elif dataset_type == "ta_research_set_XGB":
+        # wskaźniki z artykułu + 'Close' i 'Volume' (przydają się m.in. dla trybu 'delta')
+        tmp = add_indicators_praca(df)
+        X_df = tmp[[
+            'Close', 'mom_10'
+        ]].copy()
+
     else:
-        raise ValueError("dataset_type ∈ {'ohlc','ta_lags','mixed','ta_lags_plus'}")
+        raise ValueError("dataset_type ∈ {'ohlc','ta_lags','mixed','ta_lags_plus','ta_lags_2','ta_lags_core','praca'}")
+
+   
     
     
 

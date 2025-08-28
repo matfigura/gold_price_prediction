@@ -114,11 +114,11 @@ def _tune_dt(
         param_distributions = {
             "max_depth": [3, 5, 7, 9, 12, 15],
             "min_samples_split": [2, 5, 10, 20, 40, 80],
-            "min_samples_leaf": [2, 4, 8, 12, 16, 24, 32],
+            "min_samples_leaf": [2, 4, 8, 12, 16, 24,],
             "max_features": [None, "sqrt", "log2", 0.5, 0.7],
-            "ccp_alpha": [0.0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2],
+            "ccp_alpha": [0.0, 1e-6, 1e-5, 1e-4, 1e-2],
             "min_impurity_decrease": loguniform(1e-8, 1e-2),
-            "splitter": ["best", "random"],
+            "splitter": ["best"],
         }
 
     scoring, refit_key = _scoring_and_refit(metric, override_refit=refit_metric)

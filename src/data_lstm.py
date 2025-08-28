@@ -1,70 +1,90 @@
+# data_lstm.py
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
-from src.data_preprocessing import add_core_indicators, add_basic_lags
+
+
+# tylko to jest potrzebne do presetów bez lagów
+from src.data_preprocessing import add_indicators_praca
+
 
 def _build_features(df: pd.DataFrame, dataset_type: str) -> pd.DataFrame:
-    """Zwraca X_df zgodnie z presetem jak w prepare_data()."""
+    """Zwraca X_df dla LSTM — warianty BEZ lagów (presety: 'ohlc' | 'ta_research_set' | 'mixed')."""
     tmp = df.copy()
 
     if dataset_type == "ohlc":
         X_df = tmp[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
 
-    elif dataset_type == "ta_lags":
-        tmp = add_core_indicators(tmp)
-        tmp = add_basic_lags(tmp, lag_list=(1, 5, 10), add_returns=True)
-        X_df = tmp[['Close', 'Volume',
-                    'macd_diff', 'rsi_14', 'bb_percent', 'bb_width', 'atr_14',
-                    'sma_20', 'ema_12', 'cci_20',
-                    'close_lag_1', 'close_lag_5', 'close_lag_10',
-                    'ret_1d', 'ret_5d']].copy()
+    elif dataset_type == "ta_research_set":
+        # rdzeń wskaźników z artykułu + kotwice (Close, Volume) — BEZ LAGÓW
+        tmp = add_indicators_praca(tmp)
+        X_df = tmp[[
+            'Close', 'Volume',
+            'sma_10', 'wma_14',
+            'mom_10',
+            'stoch_k_14', 'stoch_d_14',
+            'rsi_14', 'wr_14',
+            'macd', 'macd_signal',
+            'cci_20'
+        ]].copy()
+
+    elif dataset_type == "ta_research_set_LSTM":
+        # rdzeń wskaźników z artykułu + kotwice (Close, Volume) — BEZ LAGÓW
+        tmp = add_indicators_praca(tmp)
+        X_df = tmp[[
+            'Close', 
+             'stoch_k_14',
+             'rsi_14', 'wr_14',
+             'macd_signal', 'macd',
+        ]].copy()
 
     elif dataset_type == "mixed":
-        tmp = add_core_indicators(tmp)
-        tmp = add_basic_lags(tmp, lag_list=(1, 5, 10), add_returns=True)
-        X_df = tmp[['Open', 'High', 'Low', 'Close', 'Volume',
-                    'macd_diff', 'rsi_14', 'bb_percent', 'bb_width', 'atr_14',
-                    'sma_20', 'ema_12', 'cci_20',
-                    'close_lag_1', 'close_lag_5', 'close_lag_10',
-                    'ret_1d', 'ret_5d']].copy()
+        # OHLC + rdzeń wskaźników — BEZ LAGÓW
+        tmp = add_indicators_praca(tmp)
+        tmp[['Open', 'High', 'Low']] = df[['Open', 'High', 'Low']]
+        X_df = tmp[[
+            'Open', 'High', 'Low',
+            'Close', 'Volume',
+            'sma_10', 'wma_14',
+            'mom_10',
+            'stoch_k_14', 'stoch_d_14',
+            'rsi_14', 'wr_14',
+            'macd', 'macd_signal',
+            'cci_20'
+        ]].copy()
+
     else:
-        raise ValueError("dataset_type ∈ {'ohlc','ta_lags','mixed'}")
+        raise ValueError("dataset_type ∈ {'ohlc','ta_research_set','mixed','ta_research_set_LSTM'}")
 
     return X_df
 
 
 def create_lstm_data(
     file_path: str = 'data/gold_data.csv',
-    dataset_type: str = 'ta_lags',     # spójnie z prepare_data()
-    target_mode: str = 'close_next',   # 'close_next' albo 'return_next'
-    window_size: int = 10,
+    dataset_type: str = 'ta_research_set',   # 'ohlc' | 'ta_research_set' | 'mixed'
+    target_mode: str = 'close_next',
+    window_size: int = 30,
     test_size: float = 0.2,
-    scale_X: bool | None = None        # None => auto (dla LSTM domyślnie True)
+    scale_X: bool | None = None,             # None => auto(True)
+    target_transform: str = "level",         # NEW: "level" | "delta"
 ):
     """
-    Buduje sekwencje dla LSTM na tych samych presetach co prepare_data().
-    - Chronologiczny split (80/20 domyślnie),
-    - Skalowanie TYLKO na train (X oraz y),
-    - Sekwencje o długości `window_size`, bez tasowania.
-
-    Zwraca:
-      X_train: (n_train_seq, window_size, n_feat)
-      X_test : (n_test_seq , window_size, n_feat)
-      y_train: (n_train_seq,)
-      y_test : (n_test_seq,)
-      dates_test: daty odpowiadające elementom y_test
-      scaler_y: StandardScaler do odwracania skali y (gdy target_mode='close_next')
-      feature_names: lista nazw cech
+    Zwraca: X_train, X_test, y_train_scaled, y_test_scaled,
+            dates_test, scaler_y, feature_names, close_last_test
+    target_transform:
+      - "level" : y = Close_{t+1}
+      - "delta" : y = Close_{t+1} - Close_{t}, gdzie Close_{t} to ostatni Close w oknie sekwencji
     """
-    # 1) Wczytanie i porządkowanie
+    import pandas as pd, numpy as np
+    from sklearn.preprocessing import StandardScaler
+
     df = pd.read_csv(file_path, sep=';')
-    for col in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']:
+    for col in ['Date','Open','High','Low','Close','Volume']:
         if col not in df.columns:
-            raise ValueError(f"Brakuje wymaganej kolumny: {col}")
+            raise ValueError(f"Brakuje kolumny: {col}")
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
     df = df.dropna(subset=['Date']).sort_values('Date').reset_index(drop=True)
 
-    # 2) Target (jak w prepare_data)
     if target_mode == 'close_next':
         df['target'] = df['Close'].shift(-1)
     elif target_mode == 'return_next':
@@ -73,48 +93,60 @@ def create_lstm_data(
     else:
         raise ValueError("target_mode ∈ {'close_next','return_next'}")
 
-    # 3) Cechy wg presetu (jak w prepare_data)
     X_df = _build_features(df, dataset_type)
 
-    # 4) Złożenie ramki i drop NaN (po wskaźnikach/lagach i shifcie targetu)
-    work = pd.concat([df[['Date', 'target']], X_df], axis=1).dropna().reset_index(drop=True)
-    dates = work['Date'].values
-    y = work['target'].values
-    X = work.drop(columns=['Date', 'target'])
+# 4) Składanie ramki: DODAJEMY Close jako *oddzielną* kolumnę referencyjną
+    work = pd.concat(
+        [df[['Date', 'target']], X_df, df[['Close']].rename(columns={'Close': 'Close_ref'})],
+        axis=1
+    ).dropna().reset_index(drop=True)
+
+    dates         = work['Date'].values
+    y_level_all   = work['target'].to_numpy()
+    close_ref_all = work['Close_ref'].to_numpy()     # JEDNOWYMIAROWE
+    X             = work.drop(columns=['Date', 'target', 'Close_ref'])
     feature_names = list(X.columns)
 
-    # 5) Chronologiczny split (80/20 domyślnie)
     n = len(work)
-    split_idx = int(n * (1 - test_size))
+    split_idx = int(n*(1-test_size))
     if split_idx <= 0 or split_idx >= n:
         raise ValueError("Niepoprawny split — sprawdź liczność danych.")
 
-    # 6) Skalowanie (LSTM zwykle wymaga; auto=True gdy None)
     if scale_X is None:
         scale_X = True
-
     if scale_X:
-        scaler_x = StandardScaler().fit(X.iloc[:split_idx])             # fit tylko na train
+        scaler_x = StandardScaler().fit(X.iloc[:split_idx])
         X_scaled = scaler_x.transform(X)
     else:
         scaler_x = None
         X_scaled = X.values
 
-    scaler_y = StandardScaler().fit(y[:split_idx].reshape(-1, 1))       # fit tylko na train (y)
-    y_scaled = scaler_y.transform(y.reshape(-1, 1)).ravel()
+    X_seq, y_seq_raw, dates_seq, close_last_seq = [], [], [], []
+    for i in range(len(X) - window_size):
+        j_last = i + window_size - 1     # indeks t
+        j_tgt  = i + window_size         # indeks t+1
 
-    # 7) Generowanie sekwencji po CAŁOŚCI (granica wyznaczy split)
-    X_seq, y_seq, dates_seq = [], [], []
-    for i in range(len(X_scaled) - window_size):
-        X_seq.append(X_scaled[i:i + window_size])
-        y_seq.append(y_scaled[i + window_size])
-        dates_seq.append(dates[i + window_size])
+        X_seq.append(X.iloc[i:i+window_size].to_numpy() if hasattr(X, "iloc") else X[i:i+window_size])
+        dates_seq.append(dates[j_tgt])
+
+        close_t = float(close_ref_all[j_last])       # Close_t (skalowany później NIE jest)
+        y_lvl   = float(y_level_all[j_tgt])          # Close_{t+1}
+
+        if target_transform == "level":
+            y_raw = y_lvl
+        elif target_transform == "delta":
+            y_raw = y_lvl - close_t
+        else:
+            raise ValueError("target_transform ∈ {'level','delta'}")
+
+        y_seq_raw.append(y_raw)
+        close_last_seq.append(close_t)
 
     X_seq = np.array(X_seq)
-    y_seq = np.array(y_seq)
+    y_seq_raw = np.array(y_seq_raw)
     dates_seq = np.array(dates_seq)
+    close_last_seq = np.array(close_last_seq)
 
-    # 8) Granica sekwencji: pierwszy indeks testu = split_idx - window_size
     boundary = split_idx - window_size
     if boundary <= 0:
         raise ValueError(
@@ -122,8 +154,14 @@ def create_lstm_data(
             f"Zmień window_size lub test_size."
         )
 
-    X_train, y_train = X_seq[:boundary], y_seq[:boundary]
-    X_test,  y_test  = X_seq[boundary:], y_seq[boundary:]
+    X_train, X_test = X_seq[:boundary], X_seq[boundary:]
+    y_train_raw, y_test_raw = y_seq_raw[:boundary], y_seq_raw[boundary:]
     dates_test = dates_seq[boundary:]
+    close_last_test = close_last_seq[boundary:]
 
-    return X_train, X_test, y_train, y_test, dates_test, scaler_y, feature_names
+    scaler_y = StandardScaler().fit(y_train_raw.reshape(-1,1))
+    y_train = scaler_y.transform(y_train_raw.reshape(-1,1)).ravel()
+    y_test  = scaler_y.transform(y_test_raw.reshape(-1,1)).ravel()
+
+    return X_train, X_test, y_train, y_test, dates_test, scaler_y, feature_names, close_last_test
+
