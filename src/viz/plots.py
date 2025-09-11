@@ -2,18 +2,32 @@ from __future__ import annotations
 
 import os
 import re
+import glob
+import math
 from typing import Optional, Sequence, Any, Callable
 
 import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.metrics import mean_absolute_error
 import pandas as pd
 
-# ─────────────────────────────────────────────────────────────────────────────
-# helpers
-# ─────────────────────────────────────────────────────────────────────────────
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
+from PIL import Image, ImageDraw, ImageFont
+
+
+PLOTS_DIR = os.path.join("results", "plots")
+
+
+try:
+    from src.models.xgboost_model import predict_xgboost as _xgb_predict_level
+except Exception:
+    _xgb_predict_level = None
+
+
+
 def _align_feature_names(feature_names: Optional[Sequence[str]], n_feat: int) -> np.ndarray:
-    """Zapewnia, że mamy dokładnie n_feat nazw: przycina lub dopisuje f{i}."""
     if feature_names is None:
         return np.array([f"f{i}" for i in range(n_feat)], dtype=object)
     names = list(feature_names)
@@ -23,24 +37,16 @@ def _align_feature_names(feature_names: Optional[Sequence[str]], n_feat: int) ->
         names += [f"f{i}" for i in range(len(names), n_feat)]
     return np.array(names, dtype=object)
 
-
 def _ensure_dir(path: Optional[str]) -> None:
     if path:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-
 
 def _safe_slug(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]+", "_", text.strip().lower())
 
 
-# (opcjonalnie) dla XGBoost uczonego na delcie — wrapper, który zwraca poziom
-try:
-    from src.models.xgboost_model import predict_xgboost as _xgb_predict_level
-except Exception:
-    _xgb_predict_level = None
 
 class XGBLevelWrapper:
-    """Proxy-estymator, który zwraca predykcję na POZIOMIE (Close_t + Δ̂ / itp.)."""
     def __init__(self, model: Any):
         self.model = model
     def predict(self, X: np.ndarray) -> np.ndarray:
@@ -49,31 +55,102 @@ class XGBLevelWrapper:
         return _xgb_predict_level(self.model, X)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PERMUTATION IMPORTANCE – wersja generyczna (predykcja już w skali celu)
-# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_predictions(y_true, y_pred, dates, model_name: str, save_path: str):
+    plt.figure(figsize=(10, 5))
+
+    sorted_data = sorted(zip(dates, y_true, y_pred), key=lambda x: pd.to_datetime(x[0]))
+    dates_sorted, y_true_sorted, y_pred_sorted = zip(*sorted_data)
+
+    plt.plot(dates_sorted, y_true_sorted, label="Rzeczywiste", linewidth=2)
+    plt.plot(dates_sorted, y_pred_sorted, label="Predykcja", linestyle='--', linewidth=2)
+
+    plt.xlabel("Data")
+    plt.ylabel("Cena zamknięcia")
+    plt.title(f"{model_name} – rzeczywiste vs predykcja")
+    plt.legend()
+    plt.grid(True)
+
+    ax = plt.gca()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax.xaxis.set_major_locator(mdates.YearLocator(base=2))
+    plt.xticks(rotation=45)
+
+    plt.tight_layout()
+    _ensure_dir(save_path)
+    plt.savefig(save_path, dpi=140, bbox_inches="tight")
+    plt.close()
+
+
+
+def build_collage(folder: str = PLOTS_DIR, pattern: str = "*_plot_*.png", cols: int = 3, out_name: str = "_collage.png"):
+    os.makedirs(folder, exist_ok=True)
+    paths = sorted(glob.glob(os.path.join(folder, pattern)))
+    if not paths:
+        print(f"[build_collage] Brak plików dopasowanych do wzorca: {os.path.join(folder, pattern)}")
+        return
+
+    images, labels = [], []
+    for p in paths:
+        try:
+            img = Image.open(p).convert("RGB")
+
+            img = img.resize((640, 360))
+            images.append(img)
+            labels.append(os.path.basename(p).replace("_plot_", " | ").replace(".png", ""))
+        except Exception as e:
+            print(f"[build_collage] Pominięto {p}: {e}")
+
+    if not images:
+        print("[build_collage] Brak poprawnych obrazów do kolażu.")
+        return
+
+    rows = math.ceil(len(images) / cols)
+    thumb_w, thumb_h = images[0].size
+    labeled_h = thumb_h + 30
+    collage = Image.new("RGB", (cols * thumb_w, rows * labeled_h), (255, 255, 255))
+
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = None
+
+    for idx, img in enumerate(images):
+        x = (idx % cols) * thumb_w
+        y = (idx // cols) * labeled_h
+        collage.paste(img, (x, y))
+
+        draw = ImageDraw.Draw(collage)
+        label = labels[idx]
+        if font:
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        else:
+            tw, th = len(label) * 6, 10  
+        draw.text((x + (thumb_w - tw)//2, y + thumb_h + 5), label, fill=(0, 0, 0), font=font)
+
+    out_path = os.path.join(folder, out_name)
+    collage.save(out_path)
+    print(f"[build_collage] Zapisano kolaż: {out_path}")
+
+
+
 def permutation_importance_generic(
     predict_fn: Callable[[np.ndarray], np.ndarray],
     X: np.ndarray,
     y: np.ndarray,
     *,
-    scoring: str = "mae",                # "mae" | "rmse"
+    scoring: str = "mae",
     n_repeats: int = 20,
     random_state: int = 42,
-    block_size: Optional[int] = None,    # dla 2D: permutacja blokowa (szeregi)
+    block_size: Optional[int] = None,
 ) -> np.ndarray:
-    """
-    Zwraca wektor importances: średni WZROST błędu po permutacji danej cechy.
-    - Obsługuje X o kształcie (n, d) oraz (n, T, d) (np. wejście do LSTM).
-    - Dla block_size>1 (tylko X 2D) stosuje permutację blokową zamiast pełnego shuffle.
-    Zakłada, że predict_fn zwraca predykcję w **tej samej skali co y** (bez rekonstrukcji).
-    """
     rng = np.random.default_rng(random_state)
 
     def _score(y_true, y_pred):
         if scoring == "rmse":
             return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-        return float(np.mean(np.abs(y_true - y_pred)))  # MAE
+        return float(np.mean(np.abs(y_true - y_pred)))
 
     X = X.values if hasattr(X, "values") else np.asarray(X)
     y = y.values.ravel() if hasattr(y, "values") else np.asarray(y).ravel()
@@ -84,7 +161,7 @@ def permutation_importance_generic(
     if X.ndim == 2:
         n, d = X.shape
     elif X.ndim == 3:
-        n, T, d = X.shape
+        n, _, d = X.shape
     else:
         raise ValueError("X must be 2D or 3D")
 
@@ -94,7 +171,6 @@ def permutation_importance_generic(
         diffs = []
         for _ in range(n_repeats):
             Xp = X.copy()
-
             if X.ndim == 2:
                 col = Xp[:, j]
                 if block_size and block_size > 1:
@@ -107,14 +183,11 @@ def permutation_importance_generic(
                     rng.shuffle(col)
                     Xp[:, j] = col
             else:
-                # 3D: mieszamy próbki (batch) całymi sekwencjami cechy j
                 col = Xp[:, :, j]
                 perm = rng.permutation(n)
                 Xp[:, :, j] = col[perm, :]
-
             err = _score(y, predict_fn(Xp))
             diffs.append(err - base_err)
-
         importances[j] = float(np.mean(diffs))
 
     return importances
@@ -130,15 +203,11 @@ def plot_permutation_importance_generic(
     n_repeats: int = 20,
     random_state: int = 42,
     block_size: Optional[int] = None,
-    clip_at_zero: bool = False,       # True → mikro-ujemności obcinane do 0
+    clip_at_zero: bool = False,
     top_n: Optional[int] = None,
     title: str = "Permutation importance",
     save_path: Optional[str] = None,
 ):
-    """
-    Rysuje permutation importance dla dowolnego modelu, który ma predict_fn(X)->ŷ
-    w **tej samej skali co y**.
-    """
     imps = permutation_importance_generic(
         predict_fn, X, y,
         scoring=scoring, n_repeats=n_repeats,
@@ -165,9 +234,7 @@ def plot_permutation_importance_generic(
     plt.close(fig)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PERMUTATION IMPORTANCE – modele uczone na DELCIE (rekonstrukcja do poziomu)
-# ─────────────────────────────────────────────────────────────────────────────
+
 def plot_model_permutation_importance(
     model: Any,
     X: np.ndarray,
@@ -185,85 +252,59 @@ def plot_model_permutation_importance(
     top_n: Optional[int] = 20,
     title: Optional[str] = None,
     save_path: Optional[str] = None,
-    eval_space: Optional[str] = None,   # "residual" | "level" | None (auto)
-    pred_kind: str = "auto",            # "auto" | "residual" | "level"
+    eval_space: Optional[str] = None,
+    pred_kind: str = "auto",
 ) -> pd.DataFrame:
-    """
-    Oblicza permutation importance dla modeli trenowanych na poziomie lub na delcie.
-    - eval_space: w jakiej przestrzeni oceniamy ważność (domyślnie: 'residual' jeśli use_residual=True, inaczej 'level').
-    - pred_kind: w jakiej przestrzeni zwraca predict(); 'auto' sam wykrywa.
-    """
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from sklearn.metrics import mean_absolute_error
-    import pandas as pd
-
-    # --- konwersje i sanity ---
     X = X.values if hasattr(X, "values") else np.asarray(X)
     y = y.values.ravel() if hasattr(y, "values") else np.asarray(y).ravel()
-    n, p = X.shape
+    _, p = X.shape
+
     feature_names = _align_feature_names(feature_names, p)
-
-    if eval_space is None:
-        eval_space = "residual" if use_residual else "level"
-    if eval_space not in {"residual", "level"}:
-        raise ValueError("eval_space must be 'residual' or 'level'")
-    if scoring != "mae":
-        raise ValueError("Obsługujemy tylko scoring='mae'")
-
     rng = np.random.default_rng(random_state)
 
-    # --- pomocnicze przekształcenia między przestrzeniami ---
-    def to_level(y_resid: np.ndarray, X_like: np.ndarray) -> np.ndarray:
-        if atr_idx is not None:
-            return y_resid * X_like[:, atr_idx] + X_like[:, close_idx]
-        return y_resid + X_like[:, close_idx]
+    if close_idx is None:
+        close_idx = getattr(model, "_close_idx", None)
+    scaler = getattr(model, "_scaler", None)
 
-    def to_residual(y_level: np.ndarray, X_like: np.ndarray) -> np.ndarray:
+    def _get_close(vecX: np.ndarray) -> np.ndarray:
         if close_idx is None:
-            raise ValueError("Konwersja level→residual wymaga close_idx")
-        if atr_idx is not None:
-            return (y_level - X_like[:, close_idx]) / (X_like[:, atr_idx] + 1e-8)
-        return y_level - X_like[:, close_idx]
+            raise ValueError("Brak close_idx (ani model._close_idx). Nie mogę rekonstruować poziomu z return.")
+        c = vecX[:, close_idx]
+        if scaler is not None and hasattr(scaler, "mean_") and hasattr(scaler, "scale_"):
+            c = c * scaler.scale_[close_idx] + scaler.mean_[close_idx]
+        return c
 
-    mae = lambda a, b: float(np.mean(np.abs(a - b)))
-
-    # docelowy wektor odniesienia (y w przestrzeni ewaluacji)
-    if eval_space == "residual":
-        if close_idx is None:
-            raise ValueError("eval_space='residual' wymaga close_idx")
-        y_ref = to_residual(y, X)
-    else:
-        y_ref = y
-
-    # --- auto-detekcja przestrzeni predykcji ---
-    y_hat_raw = model.predict(X)
+    yhat_raw = model.predict(X)
+    pred_kind_auto = "level"
     if pred_kind == "auto":
-        if use_residual:
-            # jeżeli model zwraca poziom, będzie miał dużo mniejsze MAE do y (level) niż do y_residual
-            err_to_level   = mae(y, y_hat_raw)
-            err_to_resid   = mae(to_residual(y, X), y_hat_raw)
-            pred_kind = "level" if err_to_level < err_to_resid else "residual"
-        else:
-            pred_kind = "level"  # gdy nie używamy residuali, zwykle przewidujemy poziom
-    elif pred_kind not in {"residual", "level"}:
-        raise ValueError("pred_kind must be 'auto' | 'residual' | 'level'")
+        try:
+            c = _get_close(X)
+            return_ref = (y - c) / (c + 1e-8)
+            err_to_level  = float(np.mean(np.abs(y - yhat_raw)))
+            err_to_return = float(np.mean(np.abs(return_ref - yhat_raw)))
+            pred_kind_auto = "return" if err_to_return < err_to_level else "level"
+        except Exception:
+            pred_kind_auto = "level"
+    elif pred_kind in ("level", "return"):
+        pred_kind_auto = pred_kind
+    else:
+        raise ValueError("pred_kind must be 'auto' | 'level' | 'return'.")
 
-    # funkcja zwracająca predykcję w PRZESTRZENI EWALUACJI (residual/level)
-    def predict_in_eval_space(X_like: np.ndarray) -> np.ndarray:
-        y_hat = model.predict(X_like)
-        if eval_space == "residual":
-            # potrzebujemy predykcji w residual space
-            return y_hat if pred_kind == "residual" else to_residual(y_hat, X_like)
-        else:
-            # potrzebujemy predykcji w level space
-            return y_hat if pred_kind == "level" else to_level(y_hat, X_like)
+    def predict_level(X_like: np.ndarray) -> np.ndarray:
+        yp = model.predict(X_like)
+        if pred_kind_auto == "level":
+            return yp
+        c = _get_close(X_like)
+        return c * (1.0 + yp)
 
-    # baseline
-    y_pred0 = predict_in_eval_space(X)
-    mae0 = mae(y_ref, y_pred0)
+    if scoring == "rmse":
+        def _score(a, b): return float(np.sqrt(np.mean((a - b) ** 2)))
+    else:
+        def _score(a, b): return float(np.mean(np.abs(a - b)))
 
-    # permutator (blokowy)
+    y_pred0 = predict_level(X)
+    base_err = _score(y, y_pred0)
+
     def permute_vec(v: np.ndarray) -> np.ndarray:
         v = v.copy()
         if block_size is None or block_size <= 1:
@@ -274,15 +315,14 @@ def plot_model_permutation_importance(
         order = rng.permutation(len(blocks))
         return v[np.concatenate([blocks[k] for k in order])]
 
-    # główna pętla
     inc = np.zeros(p, dtype=float)
     for j in range(p):
         deltas = []
         for _ in range(n_repeats):
             Xp = X.copy()
             Xp[:, j] = permute_vec(Xp[:, j])
-            y_hat_p = predict_in_eval_space(Xp)
-            deltas.append(mae(y_ref, y_hat_p) - mae0)
+            y_hat_p = predict_level(Xp)
+            deltas.append(_score(y, y_hat_p) - base_err)
         inc[j] = float(np.mean(deltas))
 
     if clip_at_zero:
@@ -295,10 +335,9 @@ def plot_model_permutation_importance(
         feat_sorted = feat_sorted[:top_n]
         imp_sorted  = imp_sorted[:top_n]
 
-    # wykres
     plt.figure(figsize=(12, 6))
     plt.barh(feat_sorted[::-1], imp_sorted[::-1])
-    plt.xlabel("Wzrost błędu po permutacji (MAE)")
+    plt.xlabel(f"Wzrost błędu po permutacji ({scoring.upper()}) – skala POZIOMU")
     if title:
         plt.title(title)
     plt.tight_layout()
@@ -310,7 +349,59 @@ def plot_model_permutation_importance(
     return pd.DataFrame({"feature": feat_sorted, "importance": imp_sorted})
 
 
-# „fasada” eksportowana dalej – proste API do jednego wykresu na koniec pipeline’u
+
+def plot_lstm_permutation_importance(
+    model: Any,
+    X_seq: np.ndarray,
+    y: np.ndarray,
+    feature_names: Sequence[str],
+    *,
+    n_repeats: int = 10,
+    random_state: int = 42,
+    clip_negatives: bool = True,
+    title: str = "LSTM – permutation importance (MAE)",
+    save_path: Optional[str] = None,
+) -> pd.DataFrame:
+    rng = np.random.default_rng(random_state)
+
+    X_seq = np.asarray(X_seq)
+    y = np.asarray(y).ravel()
+    n_feat = X_seq.shape[2]
+    feature_names = _align_feature_names(feature_names, n_feat)
+
+    y_pred_base = model.predict(X_seq, verbose=0).ravel()
+    baseline_mae = float(np.mean(np.abs(y - y_pred_base)))
+
+    importances = np.zeros(n_feat, dtype=float)
+
+    for j in range(n_feat):
+        deltas = []
+        for _ in range(n_repeats):
+            Xp = X_seq.copy()
+            for t in range(Xp.shape[1]):
+                rng.shuffle(Xp[:, t, j])
+            y_pred_perm = model.predict(Xp, verbose=0).ravel()
+            mae_perm = float(np.mean(np.abs(y - y_pred_perm)))
+            deltas.append(mae_perm - baseline_mae)
+        imp = float(np.mean(deltas))
+        importances[j] = max(0.0, imp) if clip_negatives else imp
+
+    order = np.argsort(importances)[::-1]
+    names_sorted = feature_names[order]
+    vals_sorted  = importances[order]
+
+    plt.figure(figsize=(10, 7))
+    plt.barh(names_sorted[::-1], vals_sorted[::-1])
+    plt.title(title)
+    plt.xlabel("Wzrost MAE po permutacji")
+    plt.tight_layout()
+    if save_path:
+        _ensure_dir(save_path)
+        plt.savefig(save_path, dpi=120, bbox_inches="tight")
+    plt.close()
+
+    return pd.DataFrame({"feature": names_sorted, "importance": vals_sorted})
+
 def analyze_permutation_only(
     model: Any,
     X_test: np.ndarray,
@@ -327,94 +418,26 @@ def analyze_permutation_only(
     slug = _safe_slug(model_name)
     return plot_model_permutation_importance(
         model=model, X=X_test, y=y_test, feature_names=feature_names,
-        use_residual=use_residual, close_idx=close_idx, atr_idx=atr_idx,
+        use_residual=False,
+        close_idx=close_idx, atr_idx=None,
         scoring="mae", n_repeats=30, block_size=20, clip_at_zero=True, top_n=20,
-        title=f"{model_name} – permutation importance (MAE)",
+        title=f"{model_name} – permutation importance (MAE, poziom)",
         save_path=os.path.join(results_dir, f"{slug}_perm_mae.png"),
-        eval_space=("residual" if use_residual else "level"),
-        pred_kind="auto",
-        
+        eval_space=None, pred_kind="auto",
     )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LSTM – permutation importance (predykcja i y w tej samej skali)
-# ─────────────────────────────────────────────────────────────────────────────
-def plot_lstm_permutation_importance(
-    model: Any,
-    X_seq: np.ndarray,               # (n_seq, window, n_feat)
-    y: np.ndarray,                   # UWAGA: w TEJ SAMEJ skali co predykcja modelu
-    feature_names: Sequence[str],
-    *,
-    n_repeats: int = 10,
-    random_state: int = 42,
-    clip_negatives: bool = True,     # mikro-ujemności obcinane do 0
-    title: str = "LSTM – permutation importance (MAE)",
-    save_path: Optional[str] = None,
-) -> pd.DataFrame:
-    """
-    Permutacja po cechach dla LSTM:
-    Dla każdej cechy j i każdego kroku czasowego t permutowane są wartości X[:, t, j]
-    między sekwencjami (batch), zachowując porządek w czasie w obrębie sekwencji.
-    Wartością ważności jest wzrost MAE względem bazowego MAE.
-    """
-    rng = np.random.default_rng(random_state)
-
-    X_seq = np.asarray(X_seq)
-    y = np.asarray(y).ravel()
-    n_feat = X_seq.shape[2]
-    feature_names = _align_feature_names(feature_names, n_feat)
-
-    # baseline
-    y_pred_base = model.predict(X_seq, verbose=0).ravel()
-    baseline_mae = float(np.mean(np.abs(y - y_pred_base)))
-
-    importances = np.zeros(n_feat, dtype=float)
-
-    for j in range(n_feat):
-        deltas = []
-        for _ in range(n_repeats):
-            Xp = X_seq.copy()
-            for t in range(Xp.shape[1]):
-                rng.shuffle(Xp[:, t, j])  # permutacja między sekwencjami
-            y_pred_perm = model.predict(Xp, verbose=0).ravel()
-            mae_perm = float(np.mean(np.abs(y - y_pred_perm)))
-            deltas.append(mae_perm - baseline_mae)
-        imp = float(np.mean(deltas))
-        importances[j] = max(0.0, imp) if clip_negatives else imp
-
-    order = np.argsort(importances)[::-1]
-    names_sorted = feature_names[order]
-    vals_sorted  = importances[order]
-
-    # wykres
-    plt.figure(figsize=(10, 7))
-    plt.barh(names_sorted[::-1], vals_sorted[::-1])
-    plt.title(title)
-    plt.xlabel("Wzrost MAE po permutacji")
-    plt.tight_layout()
-    if save_path:
-        _ensure_dir(save_path)
-        plt.savefig(save_path, dpi=120, bbox_inches="tight")
-    plt.close()
-
-    return pd.DataFrame({"feature": names_sorted, "importance": vals_sorted})
 
 
 def analyze_lstm_permutation_only(
     model: Any,
-    X_test_seq: np.ndarray,          # (n_seq, window, n_feat)
-    y_test_scaled: np.ndarray,       # ta sama skala co wyjście modelu
+    X_test_seq: np.ndarray,
+    y_test_scaled: np.ndarray,
     feature_names: Sequence[str],
     results_dir: str,
     model_name: str = "LSTM",
     *,
     n_repeats: int = 10,
     random_state: int = 42,
-) -> pd.DataFrame:
-    """
-    Wygodny wrapper: jeden call → zapis wykresu permutation importance dla LSTM.
-    """
+):
     os.makedirs(results_dir, exist_ok=True)
     slug = _safe_slug(model_name)
     save_path = os.path.join(results_dir, f"{slug}_perm_mae.png")
@@ -430,34 +453,17 @@ def analyze_lstm_permutation_only(
         save_path=save_path,
     )
 
-def plot_keras_curves(history, title_prefix="LSTM", save_dir="results"):
-    """Rysuje krzywe uczenia Keras (loss oraz – jeśli dostępne – MAE)."""
-    import matplotlib.pyplot as plt
-    hist = history.history
 
-    # 1) Loss (u Ciebie loss = MAE, więc to realnie MAE)
-    plt.figure(figsize=(8, 4))
-    plt.plot(hist.get("loss", []), label="train")
-    if "val_loss" in hist:
-        plt.plot(hist["val_loss"], label="val")
-    plt.xlabel("Epoka")
-    plt.ylabel("Loss (MAE)")
-    plt.title(f"{title_prefix} – loss vs epoka")
-    plt.legend(); plt.tight_layout()
-    plt.savefig(f"{save_dir}/{title_prefix.lower()}_loss_curve.png", dpi=140)
-    plt.close()
 
-    # 2) Opcjonalnie: osobny wykres MAE, jeśli masz metrics=['mae'] w compile()
-    mae_key = "mae" if "mae" in hist else ("mean_absolute_error" if "mean_absolute_error" in hist else None)
-    if mae_key:
-        val_mae_key = "val_mae" if "val_mae" in hist else ("val_mean_absolute_error" if "val_mean_absolute_error" in hist else None)
-        plt.figure(figsize=(8, 4))
-        plt.plot(hist[mae_key], label="train")
-        if val_mae_key:
-            plt.plot(hist[val_mae_key], label="val")
-        plt.xlabel("Epoka")
-        plt.ylabel("MAE")
-        plt.title(f"{title_prefix} – MAE vs epoka")
-        plt.legend(); plt.tight_layout()
-        plt.savefig(f"{save_dir}/{title_prefix.lower()}_mae_curve.png", dpi=140)
-        plt.close()
+__all__ = [
+    "PLOTS_DIR",
+    "plot_predictions",
+    "build_collage",
+    "permutation_importance_generic",
+    "plot_permutation_importance_generic",
+    "plot_model_permutation_importance",
+    "plot_lstm_permutation_importance",
+    "analyze_permutation_only",
+    "analyze_lstm_permutation_only",
+    "XGBLevelWrapper",
+]

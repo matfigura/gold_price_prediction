@@ -1,2 +1,6 @@
 model,MAE mean,RMSE,R^2,Best params
-"MLPRegressor (RandomizedSearch, scaled, TSCV)",14.10991,18.97117,0.99569,"{'mlp__learning_rate_init': 0.0005, 'mlp__hidden_layer_sizes': (64,), 'mlp__batch_size': 32, 'mlp__alpha': 0.001, 'mlp__activation': 'relu'}"
+"Decision Tree (RandomizedSearch, TSCV)",13.33096,18.13099,0.99606,"{'ccp_alpha': 0.0001, 'max_depth': 12, 'max_features': 'log2', 'min_impurity_decrease': np.float64(0.00047659118086808386), 'min_samples_leaf': 16, 'min_samples_split': 5, 'splitter': 'best'}"
+"Random Forest (RandomizedSearch, TSCV)",13.63766,18.45978,0.99591,"{'n_estimators': 400, 'min_samples_split': 10, 'min_samples_leaf': 16, 'max_samples': 0.7, 'max_features': 'log2', 'max_depth': 5}"
+"XGBoost (Tuning no-ES → Retrain with ES, TSCV)",13.33016,18.13089,0.99606,"{'subsample': 0.6, 'reg_lambda': 5, 'reg_alpha': 0.1, 'min_child_weight': 5, 'max_depth': 3, 'learning_rate': 0.05, 'gamma': 1, 'colsample_bytree': 0.9}"
+"MLPRegressor (RandomizedSearch, scaled, TSCV)",13.67492,18.44720,0.99590,"{'mlp__learning_rate_init': 0.001, 'mlp__hidden_layer_sizes': (128,), 'mlp__batch_size': 32, 'mlp__alpha': 0.001, 'mlp__activation': 'relu'}"
+LSTM,19.49367,25.79542,0.99202,"LSTM(units=(128,32), dropout=0.2, loss=mae, Adam lr=0.0003, batch=32, ES(pat=16)+RLROP(pat=6); preset=ta_research_set_LSTM, window=30, tform=return)"

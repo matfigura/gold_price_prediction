@@ -1,11 +1,10 @@
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional   
 import time
 import numpy as np
 from sklearn.neural_network import MLPRegressor
 from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import make_scorer, mean_absolute_error, mean_squared_error, r2_score
 
 
 def train_mlp(
@@ -13,110 +12,200 @@ def train_mlp(
     random_state: int = 42,
     cv_splits: int = 5,
     n_iter: int = 30,
-    fast: bool = False,         # [DODANE] tryb szybki jak w DT/RF/XGB
-    cv_gap: int = 0,            # [DODANE] przerwa między foldami (chroni przed micro-leakage)
+    fast: bool = False,            
+    cv_gap: int = 0,               
+    tag: str = "",                 
+    fix_hidden_size: Optional[tuple] = None,  
 ):
-    """
-    MLPRegressor:
-    - Pipeline: StandardScaler -> MLP
-    - TimeSeriesSplit (+ opcjonalny gap)
-    - RandomizedSearchCV ze scoringiem: MAE (neg_mean_absolute_error)
-    Zwraca (result_dict, best_estimator_).
 
-    Tryb `fast=True`:
-      • mniejsza liczba foldów (3),
-      • mniej kandydatów (min(n_iter, 12)),
-      • ciaśniejsza siatka wokół Twoich najlepszych hiperparametrów:
-          hidden_layer_sizes=(64,), activation='relu', alpha≈1e-5, lr_init≈0.001, batch_size=64
-      • mniejsze max_iter i luźniejsze tol.
-    """
 
+    def _make_pipe(max_iter: int, tol: float) -> Pipeline:
+        
+        return Pipeline([
+            ('scaler', StandardScaler()),
+            ('mlp', MLPRegressor(
+                hidden_layer_sizes=(128, 64),
+                activation='relu',
+                solver='adam',
+                learning_rate='adaptive',
+                learning_rate_init=0.001,
+                batch_size=64,
+                alpha=1e-4,
+                max_iter=max_iter,
+                tol=tol,
+                shuffle=False,                 
+                early_stopping=False,          
+                validation_fraction=0.10,      
+                n_iter_no_change=20,           
+                random_state=random_state,
+                verbose=False
+            ))
+        ])
+
+    def _tscv(n_splits: int, gap: int) -> TimeSeriesSplit:
+        
+        try:
+            return TimeSeriesSplit(n_splits=n_splits, gap=gap)
+        except TypeError:
+            return TimeSeriesSplit(n_splits=n_splits)
+
+
+    scan_cv = 3                                    
+    scan_iter = min(n_iter, 12)                    
+    scan_max_iter = 400                            
+    scan_tol = 1e-4                                
+    scan_params = {                                
+        'mlp__hidden_layer_sizes': [(64,), (128,), (64, 32)],
+        'mlp__alpha': [1e-6, 1e-5, 1e-4],
+        'mlp__learning_rate_init': [5e-4, 1e-3, 3e-3],
+        'mlp__batch_size': [32, 64],
+        'mlp__activation': ['relu'],
+    }
+
+
+    fin_max_iter = 800                             
+    fin_tol = 1e-4                                 
+
+    # Log startu
     print("[MLP] ▶ Start strojenia (RandomizedSearchCV + TimeSeriesSplit)")
-    print(f"[MLP]   TRAIN: {X_train.shape[0]} próbek, {X_train.shape[1]} cech | fast={fast}")
-    t0 = time.time()
+    print(f"[MLP]   TRAIN: {X_train.shape[0]} próbek, {X_train.shape[1]} cech | fast={fast}"
+          f"{' | ' + tag if tag else ''}")
+    t_global0 = time.time()
 
-    # [FAST] korekty budżetu obliczeń
+
+
     if fast:
-        cv_splits = max(3, min(cv_splits, 3))
-        n_iter = min(n_iter, 12)
-        max_iter = 800
-        tol = 1e-3
-    else:
-        max_iter = 2000
-        tol = 1e-4
-
-    pipe = Pipeline([
-        ('scaler', StandardScaler()),
-        ('mlp', MLPRegressor(
-            hidden_layer_sizes=(128, 64),
-            activation='relu',
-            solver='adam',
-            learning_rate='constant',
-            learning_rate_init=0.003,
-            batch_size='auto',
-            alpha=1e-4,             # L2
-            max_iter=max_iter,      # [FAST] niższe w fast
-            tol=tol,                # [FAST] luźniejsze w fast
-            shuffle=False,          # ważne przy szeregach!
-            early_stopping=False,   # bez losowej walidacji wewnętrznej
+        t0 = time.time()
+        pipe_scan = _make_pipe(scan_max_iter, scan_tol)
+        search_scan = RandomizedSearchCV(
+            estimator=pipe_scan,
+            param_distributions=scan_params,
+            n_iter=scan_iter,
+            scoring='neg_mean_absolute_error',
+            cv=_tscv(scan_cv, cv_gap),
             random_state=random_state,
-            verbose=False
-        ))
-    ])
+            n_jobs=-1,
+            refit=True,
+            verbose=1,
+            return_train_score=False
+        )
+        print("[MLP] ▶ Etap 1/1 (fast) — skan rozmiarów")
+        search_scan.fit(X_train, y_train)
+        t1 = time.time()
 
-    # Siatka strojenia
-    if fast:
-        # [FAST] wąsko wokół Twoich best params:
-        # {'mlp__learning_rate_init': 0.001, 'mlp__hidden_layer_sizes': (64,),
-        #  'mlp__batch_size': 64, 'mlp__alpha': 1e-05, 'mlp__activation': 'relu'}
-        param_distributions = {
-            'mlp__hidden_layer_sizes': [(64,), (64, 32)],     # małe, szybkie
-            'mlp__activation': ['relu'],                      # wokół najlepszego
-            'mlp__alpha': [1e-6, 1e-5, 1e-4],
-            'mlp__learning_rate_init': [0.0005, 0.001, 0.003],
-            'mlp__batch_size': [64, 128],                     # wąsko wokół 64
+        result = {
+            'model': f"MLPRegressor (RandomizedSearch, scaled, TSCV fast)",
+            'CV MAE': -search_scan.best_score_,
+            'Best params': search_scan.best_params_
         }
-    else:
-        # pełniejsza przestrzeń
-        param_distributions = {
-            'mlp__hidden_layer_sizes': [(64,), (128,), (64, 32), (128, 64), (128, 64, 32)],
-            'mlp__activation': ['relu', 'tanh'],
-            'mlp__alpha': [1e-6, 1e-5, 1e-4, 1e-3, 1e-2],
-            'mlp__learning_rate_init': [0.0005, 0.001, 0.003, 0.01],
-            'mlp__batch_size': ['auto', 32, 64, 128],
+        if tag:
+            result['Tag'] = tag
+        print(f"[MLP] ✅ Zakończono (fast) w {t1 - t0:.2f}s | CV MAE={result['CV MAE']:.6f}"
+              f"{' | ' + tag if tag else ''}")
+        print(f"[MLP]    Najlepsze parametry: {result['Best params']}")
+        return result, search_scan.best_estimator_
+
+  
+    if fix_hidden_size is not None:
+        t0 = time.time()
+        pipe_fin = _make_pipe(fin_max_iter, fin_tol)
+        fin_params = {
+            'mlp__hidden_layer_sizes': [fix_hidden_size],   
+            'mlp__alpha': [1e-4, 1e-3],
+            'mlp__learning_rate_init': [5e-4, 1e-3, 3e-3],
+            'mlp__batch_size': [32],
+            'mlp__activation': ['relu'],
         }
+        search_fin = RandomizedSearchCV(
+            estimator=pipe_fin,
+            param_distributions=fin_params,
+            n_iter=n_iter,
+            scoring='neg_mean_absolute_error',
+            cv=_tscv(cv_splits, cv_gap),
+            random_state=random_state,
+            n_jobs=-1,
+            refit=True,
+            verbose=1,
+            return_train_score=False
+        )
+        print(f"[MLP] ▶ Etap 2 (fixed HLS={fix_hidden_size}) — dostrajanie")
+        search_fin.fit(X_train, y_train)
+        t1 = time.time()
 
-    # TimeSeriesSplit z gap (jeśli wersja sklearn wspiera)
-    try:
-        tscv = TimeSeriesSplit(n_splits=cv_splits, gap=cv_gap)
-    except TypeError:
-        tscv = TimeSeriesSplit(n_splits=cv_splits)
+        result = {
+            'model': f"MLPRegressor (RandomizedSearch, scaled, TSCV)",
+            'CV MAE': -search_fin.best_score_,
+            'Best params': search_fin.best_params_
+        }
+        if tag:
+            result['Tag'] = tag + f" | fix_hls={fix_hidden_size}"
+        print(f"[MLP] ✅ Zakończono (etap 2) w {t1 - t0:.2f}s | CV MAE={result['CV MAE']:.6f}"
+              f"{' | ' + result.get('Tag','') if tag else ''}")
+        print(f"[MLP]    Najlepsze parametry: {result['Best params']}")
+        return result, search_fin.best_estimator_
 
-    search = RandomizedSearchCV(
-        estimator=pipe,
-        param_distributions=param_distributions,
-        n_iter=n_iter,
-        scoring='neg_mean_absolute_error',   # MAE
-        cv=tscv,
+
+    t1_0 = time.time()
+    pipe_scan = _make_pipe(scan_max_iter, scan_tol)
+    search_scan = RandomizedSearchCV(
+        estimator=pipe_scan,
+        param_distributions=scan_params,
+        n_iter=scan_iter,
+        scoring='neg_mean_absolute_error',
+        cv=_tscv(scan_cv, cv_gap),
         random_state=random_state,
         n_jobs=-1,
         refit=True,
         verbose=1,
         return_train_score=False
     )
+    print("[MLP] ▶ Etap 1/2 — skan rozmiarów")
+    search_scan.fit(X_train, y_train)
+    t1_1 = time.time()
+    best_hls = search_scan.best_params_['mlp__hidden_layer_sizes']  
+    print(f"[MLP] ✅ Etap 1/2 done w {t1_1 - t1_0:.2f}s | best_hls={best_hls} | CV MAE={-search_scan.best_score_:.6f}"
+          f"{' | ' + tag if tag else ''}")
 
-    search.fit(X_train, y_train)
-    t1 = time.time()
-
-    result = {
-        'model': f"MLPRegressor (RandomizedSearch, scaled, TSCV{' fast' if fast else ''})",
-        'CV MAE': -search.best_score_,                 # MAE ↓
-        'Best params': search.best_params_
+ 
+    t2_0 = time.time()
+    pipe_fin = _make_pipe(fin_max_iter, fin_tol)
+    fin_params = {
+        'mlp__hidden_layer_sizes': [best_hls],         
+        'mlp__alpha': [1e-4, 1e-3],
+        'mlp__learning_rate_init': [5e-4, 1e-3, 3e-3],
+        'mlp__batch_size': [32],
+        'mlp__activation': ['relu'],
     }
-    print(f"[MLP] ✅ Zakończono strojenie w {t1 - t0:.2f}s | CV MAE={result['CV MAE']:.6f}")
+    search_fin = RandomizedSearchCV(
+        estimator=pipe_fin,
+        param_distributions=fin_params,
+        n_iter=n_iter,                                
+        scoring='neg_mean_absolute_error',
+        cv=_tscv(cv_splits, cv_gap),
+        random_state=random_state,
+        n_jobs=-1,
+        refit=True,
+        verbose=1,
+        return_train_score=False
+    )
+    print("[MLP] ▶ Etap 2/2 — dostrajanie wokół best_hls")
+    search_fin.fit(X_train, y_train)
+    t2_1 = time.time()
+
+  
+    result = {
+        'model': f"MLPRegressor (RandomizedSearch, scaled, TSCV)",
+        'CV MAE': -search_fin.best_score_,
+        'Best params': search_fin.best_params_
+    }
+    if tag:
+        result['Tag'] = tag + f" | stage1_hls={best_hls}"
+    print(f"[MLP] ✅ Zakończono strojenie w {time.time() - t_global0:.2f}s | CV MAE={result['CV MAE']:.6f}"
+          f"{' | ' + result.get('Tag','') if tag else ''}")
     print(f"[MLP]    Najlepsze parametry: {result['Best params']}")
-    return result, search.best_estimator_
+    return result, search_fin.best_estimator_
 
 
 def predict_mlp(best_model, X_test):
+    
     return best_model.predict(X_test)

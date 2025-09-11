@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-from typing import Tuple, Union, Dict, Optional, Any
+from typing import Tuple, Union, Dict, Optional, Any, List
 import numpy as np
 
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from sklearn.metrics import make_scorer, mean_squared_error
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Scoring + refit (kompatybilne z Twoim mainem; identyczna logika jak w DT)
-# ─────────────────────────────────────────────────────────────────────────────
+
 def _scoring_and_refit(metric: str) -> Tuple[Union[str, Dict[str, object]], str]:
     rmse = make_scorer(lambda yt, yp: np.sqrt(mean_squared_error(yt, yp)),
                        greater_is_better=False)
@@ -19,7 +17,7 @@ def _scoring_and_refit(metric: str) -> Tuple[Union[str, Dict[str, object]], str]
         return {"rmse": rmse}, "rmse"
     if metric == "r2":
         return "r2", "r2"
-    # multi – logujemy kilka metryk, refit po MAE (jak w DT/XGB)
+  
     return {
         "neg_mean_absolute_error": "neg_mean_absolute_error",
         "r2": "r2",
@@ -27,47 +25,29 @@ def _scoring_and_refit(metric: str) -> Tuple[Union[str, Dict[str, object]], str]
     }, "neg_mean_absolute_error"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Tworzenie celu (to samo API co w DT/XGB)
-# ─────────────────────────────────────────────────────────────────────────────
 def _make_target(
     y: np.ndarray, X: np.ndarray,
     target_transform: str,
     close_idx: Optional[int],
-    atr_idx: Optional[int]
 ) -> np.ndarray:
     """
-    - "level"           : y
-    - "delta"           : y - Close_t
-    - "delta_over_atr"  : (y - Close_t) / ATR_t
-    - "return"          : (y - Close_t) / Close_t
+    - "level"  : y
+    - "return" : (y - Close_t) / Close_t
     """
     if target_transform == "level" or target_transform is None:
         return y
 
+    if target_transform != "return":
+        raise ValueError("target_transform musi być 'level' albo 'return'.")
+
     if close_idx is None:
-        raise ValueError(f"target_transform='{target_transform}' wymaga close_idx (kolumna 'Close' w X).")
+        raise ValueError("target_transform='return' wymaga close_idx (kolumna 'Close' w X).")
 
     close_t = X[:, close_idx]
-
-    if target_transform == "delta":
-        return y - close_t
-
-    if target_transform == "delta_over_atr":
-        if atr_idx is None:
-            raise ValueError("target_transform='delta_over_atr' wymaga atr_idx (np. 'atr_14').")
-        atr_t = X[:, atr_idx]
-        return (y - close_t) / (atr_t + 1e-8)
-
-    if target_transform == "return":
-        return (y - close_t) / (close_t + 1e-8)
-
-    raise ValueError("target_transform ∈ {'level','delta','delta_over_atr','return'}")
+    return (y - close_t) / (close_t + 1e-8)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Tuning RF z TimeSeriesSplit + gap; tryb fast (analogicznie do DT)
-# ─────────────────────────────────────────────────────────────────────────────
+
 def _tune_rf(
     X_train, y_train,
     cv_splits: int,
@@ -78,10 +58,9 @@ def _tune_rf(
     fast: bool,
     target_transform: str,
     close_idx: Optional[int],
-    atr_idx: Optional[int]
 ):
-    # [spójnie z DT] tuning na tej samej przestrzeni celu, co finalny fit
-    y_tune = _make_target(y_train, X_train, target_transform, close_idx, atr_idx)
+
+    y_tune = _make_target(y_train, X_train, target_transform, close_idx)
 
     base = RandomForestRegressor(
         random_state=random_state,
@@ -91,14 +70,13 @@ def _tune_rf(
     )
 
     if fast:
-        # ciaśniejsza siatka + mniej drzew dla szybkich testów
         param_distributions = {
             "n_estimators": [200, 400],
             "max_depth": [5, 10, 20, None],
             "min_samples_split": [2, 5, 10],
             "min_samples_leaf": [1, 2, 4, 8],
             "max_features": ["sqrt", 0.6, 0.8],
-            "max_samples": [None, 0.7, 0.9],   # tylko gdy bootstrap=True
+            "max_samples": [None, 0.7, 0.9],
         }
         cv_splits = max(3, min(cv_splits, 3))
         n_iter    = min(n_iter, 30)
@@ -109,7 +87,7 @@ def _tune_rf(
             "min_samples_split": [2, 5, 10, 20],
             "min_samples_leaf": [1, 2, 4, 8, 16],
             "max_features": [None, "sqrt", "log2", 0.5, 0.7],
-            "max_samples": [None, 0.7, 0.9],    # jeśli bootstrap=True
+            "max_samples": [None, 0.7, 0.9],
         }
 
     scoring, refit = _scoring_and_refit(metric)
@@ -134,7 +112,6 @@ def _tune_rf(
     search.fit(X_train, y_tune)
 
     cvres = search.cv_results_
-
     def _safe(name): 
         return float(cvres[name][search.best_index_]) if name in cvres else None
 
@@ -148,9 +125,7 @@ def _tune_rf(
     return result, search.best_params_
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Główny wrapper: tuning → finalny fit na całym train (spójnie z DT)
-# ─────────────────────────────────────────────────────────────────────────────
+
 def train_random_forest(
     X_train, y_train,
     random_state: int = 42,
@@ -159,17 +134,18 @@ def train_random_forest(
     metric: str = "multi",
     cv_gap: int = 0,
     fast: bool = False,
-    target_transform: str = "delta",      # "level" | "delta" | "delta_over_atr" | "return"
+    target_transform: str = "return",      
     close_idx: Optional[int] = None,
-    atr_idx: Optional[int] = None
+    feature_scaler: Optional[Any] = None,
+    feature_names: Optional[List[str]] = None
 ):
-    # walidacja jak w DT
-    if target_transform in ("delta", "return", "delta_over_atr") and close_idx is None:
-        raise ValueError(f"target_transform='{target_transform}' wymaga close_idx.")
-    if target_transform == "delta_over_atr" and atr_idx is None:
-        raise ValueError("target_transform='delta_over_atr' wymaga atr_idx (ATR w cechach).")
 
-    # 1) tuning (CV na tym samym celu co finalny fit)
+    if target_transform not in ("level", "return"):
+        raise ValueError("target_transform musi być 'level' albo 'return'.")
+    if target_transform == "return" and close_idx is None:
+        raise ValueError("target_transform='return' wymaga close_idx.")
+
+ 
     tune_res, best_params = _tune_rf(
         X_train, y_train,
         cv_splits=cv_splits,
@@ -180,10 +156,9 @@ def train_random_forest(
         fast=fast,
         target_transform=target_transform,
         close_idx=close_idx,
-        atr_idx=atr_idx
     )
 
-    # 2) finalny fit na całym train (na transformowanym celu)
+
     best_rf = RandomForestRegressor(
         random_state=random_state,
         n_jobs=-1,
@@ -191,15 +166,16 @@ def train_random_forest(
         oob_score=False,
         **best_params
     )
-    y_final = _make_target(y_train, X_train, target_transform, close_idx, atr_idx)
+    y_final = _make_target(y_train, X_train, target_transform, close_idx)
     best_rf.fit(X_train, y_final)
 
-    # meta do rekonstrukcji poziomu w predykcji
+
     setattr(best_rf, "_target_transform", target_transform)
     setattr(best_rf, "_close_idx", close_idx)
-    setattr(best_rf, "_atr_idx", atr_idx)
+    setattr(best_rf, "_scaler", feature_scaler)
+    setattr(best_rf, "_feature_names", feature_names)
 
-    # scalony raport
+
     result = {
         "model": "Random Forest (RandomizedSearch, TSCV)",
         "CV MAE": tune_res.get("CV MAE"),
@@ -211,34 +187,29 @@ def train_random_forest(
     return result, best_rf
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Predykcja: uwzględnia transformację celu (rekonstrukcja poziomu)
-# ─────────────────────────────────────────────────────────────────────────────
+
 def predict_random_forest(model: RandomForestRegressor, X: Any) -> np.ndarray:
     yhat_base = model.predict(X)
 
     tform    = getattr(model, "_target_transform", "level")
     close_ix = getattr(model, "_close_idx", None)
-    atr_ix   = getattr(model, "_atr_idx", None)
+    scaler   = getattr(model, "_scaler", None)
 
     if tform == "level" or tform is None:
         return yhat_base
 
-    if close_ix is None:
-        raise RuntimeError("Brak _close_idx do rekonstrukcji poziomu (uczenie residualne).")
+    if tform != "return":
+        raise RuntimeError("Nieobsługiwany tryb predykcji (oczekiwano 'level' lub 'return').")
 
+    if close_ix is None:
+        raise RuntimeError("Brak _close_idx do rekonstrukcji poziomu.")
+
+  
     close_t = X[:, close_ix]
 
-    if tform == "delta":
-        return close_t + yhat_base
 
-    if tform == "delta_over_atr":
-        if atr_ix is None:
-            raise RuntimeError("Brak _atr_idx do rekonstrukcji (delta_over_atr).")
-        atr_t = X[:, atr_ix]
-        return close_t + yhat_base * atr_t
+    if scaler is not None and hasattr(scaler, "mean_") and hasattr(scaler, "scale_"):
+        close_t = close_t * scaler.scale_[close_ix] + scaler.mean_[close_ix]
 
-    if tform == "return":
-        return close_t * (1.0 + yhat_base)
 
-    return yhat_base
+    return close_t * (1.0 + yhat_base)

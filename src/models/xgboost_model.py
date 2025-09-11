@@ -1,5 +1,4 @@
-
-from typing import Tuple, Union, Dict, Any, Optional
+from typing import Tuple, Union, Dict, Any, Optional, List
 import inspect
 import numpy as np
 
@@ -8,9 +7,6 @@ from sklearn.metrics import make_scorer, mean_squared_error
 from xgboost import XGBRegressor
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Scoring + refit (kompatybilne z Twoim mainem)
-# ─────────────────────────────────────────────────────────────────────────────
 def _scoring_and_refit(metric: str) -> Tuple[Union[str, Dict[str, Any]], str]:
     rmse = make_scorer(lambda yt, yp: np.sqrt(mean_squared_error(yt, yp)),
                        greater_is_better=False)
@@ -20,7 +16,7 @@ def _scoring_and_refit(metric: str) -> Tuple[Union[str, Dict[str, Any]], str]:
         return {"rmse": rmse}, "rmse"
     if metric == "r2":
         return "r2", "r2"
-    # multi: logujemy MAE+RMSE+R2, refit po MAE
+
     return {
         "neg_mean_absolute_error": "neg_mean_absolute_error",
         "r2": "r2",
@@ -28,47 +24,24 @@ def _scoring_and_refit(metric: str) -> Tuple[Union[str, Dict[str, Any]], str]:
     }, "neg_mean_absolute_error"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Transformacja celu (jak w DT/RF)
-# ─────────────────────────────────────────────────────────────────────────────
 def _make_target(
     y: np.ndarray, X: np.ndarray,
     target_transform: str,
     close_idx: Optional[int],
-    atr_idx: Optional[int]
 ) -> np.ndarray:
     """
-    - "level"           : y
-    - "delta"           : y - Close_t
-    - "delta_over_atr"  : (y - Close_t) / ATR_t
-    - "return"          : (y - Close_t) / Close_t
+    - "level"  : y
+    - "return" : (y - Close_t) / Close_t
     """
-    if target_transform == "level":
+    if target_transform == "level" or target_transform is None:
         return y
-
+    if target_transform != "return":
+        raise ValueError("target_transform musi być 'level' albo 'return'.")
     if close_idx is None:
-        raise ValueError(f"target_transform='{target_transform}' wymaga close_idx (kolumna 'Close' w X).")
-
+        raise ValueError("target_transform='return' wymaga close_idx (kolumna 'Close' w X).")
     close_t = X[:, close_idx]
+    return (y - close_t) / (close_t + 1e-8)
 
-    if target_transform == "delta":
-        return y - close_t
-
-    if target_transform == "delta_over_atr":
-        if atr_idx is None:
-            raise ValueError("target_transform='delta_over_atr' wymaga atr_idx (kolumna 'atr_14' w X).")
-        atr_t = X[:, atr_idx]
-        return (y - close_t) / (atr_t + 1e-8)
-
-    if target_transform == "return":
-        return (y - close_t) / (close_t + 1e-8)
-
-    raise ValueError("target_transform ∈ {'level','delta','delta_over_atr','return'}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Krok 1 – tuning bez ES (na tej samej przestrzeni celu)
-# ─────────────────────────────────────────────────────────────────────────────
 def _tune_xgb_without_es(
     X_train, y_train,
     cv_splits: int,
@@ -77,12 +50,9 @@ def _tune_xgb_without_es(
     metric: str,
     random_state: int,
     fast: bool,
-    use_residual_target: bool,          # zachowane dla wstecznej zgodności
-    close_idx: Optional[int],
     target_transform: str,
-    atr_idx: Optional[int]
+    close_idx: Optional[int],
 ):
-    # BEZ early_stopping_rounds – ES dopiero w retrenie
     base = XGBRegressor(
         objective="reg:squarederror",
         tree_method="hist",
@@ -137,9 +107,8 @@ def _tune_xgb_without_es(
         error_score="raise"
     )
 
-    # Tuning na tej samej transformacji celu co późniejszy retrain
-    y_train_tune = _make_target(y_train, X_train, target_transform, close_idx, atr_idx)
-    search.fit(X_train, y_train_tune)
+    y_tune = _make_target(y_train, X_train, target_transform, close_idx)
+    search.fit(X_train, y_tune)
 
     cvres = search.cv_results_
     def _safe(name): return float(cvres[name][search.best_index_]) if name in cvres else None
@@ -153,9 +122,6 @@ def _tune_xgb_without_es(
     return result, search.best_params_
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Krok 2 – retrain z ES (na tym samym celu)
-# ─────────────────────────────────────────────────────────────────────────────
 def _fit_xgb_with_es(
     X_train, y_train,
     best_params: Dict[str, Any],
@@ -165,7 +131,6 @@ def _fit_xgb_with_es(
     random_state: int,
     target_transform: str,
     close_idx: Optional[int],
-    atr_idx: Optional[int]
 ):
     if not (0 < val_fraction < 0.5):
         raise ValueError("val_fraction musi być w (0, 0.5), np. 0.2")
@@ -178,9 +143,9 @@ def _fit_xgb_with_es(
     X_tr, X_val = X_train[:split_idx], X_train[split_idx:]
     y_tr_raw, y_val_raw = y_train[:split_idx], y_train[split_idx:]
 
-    # Uczenie na tej samej transformacji co tuning
-    y_tr  = _make_target(y_tr_raw,  X_tr,  target_transform, close_idx, atr_idx)
-    y_val = _make_target(y_val_raw, X_val, target_transform, close_idx, atr_idx)
+
+    y_tr  = _make_target(y_tr_raw,  X_tr,  target_transform, close_idx)
+    y_val = _make_target(y_val_raw, X_val, target_transform, close_idx)
 
     est = XGBRegressor(
         objective="reg:squarederror",
@@ -202,17 +167,14 @@ def _fit_xgb_with_es(
 
     est.fit(X_tr, y_tr, **fit_params)
 
-    # meta do rekonstrukcji poziomu
+
     setattr(est, "_target_transform", target_transform)
     setattr(est, "_close_idx", close_idx)
-    setattr(est, "_atr_idx", atr_idx)
+
 
     return est
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Publiczny wrapper
-# ─────────────────────────────────────────────────────────────────────────────
 def train_xgboost(
     X_train, y_train,
     cv_splits: int = 5,
@@ -223,18 +185,18 @@ def train_xgboost(
     val_fraction: Optional[float] = 0.2,
     early_stopping_rounds: int = 200,
     fast: bool = False,
-    use_residual_target: bool = True,      # dla zgodności ze starym wywołaniem (nieużywane logicznie)
     close_idx: Optional[int] = None,
-    target_transform: str = "delta",       # "level" | "delta" | "delta_over_atr" | "return"
-    atr_idx: Optional[int] = None
+    target_transform: str = "return",       
+    feature_scaler: Optional[Any] = None,
+    feature_names: Optional[List[str]] = None
 ):
-    # walidacja transformacji
-    if target_transform in ("delta", "return", "delta_over_atr") and close_idx is None:
-        raise ValueError(f"target_transform='{target_transform}' wymaga close_idx.")
-    if target_transform == "delta_over_atr" and atr_idx is None:
-        raise ValueError("target_transform='delta_over_atr' wymaga atr_idx (ATR w cechach).")
 
-    # 1) tuning bez ES
+    if target_transform not in ("level", "return"):
+        raise ValueError("target_transform musi być 'level' albo 'return'.")
+    if target_transform == "return" and close_idx is None:
+        raise ValueError("target_transform='return' wymaga close_idx.")
+
+ 
     tune_res, best_params = _tune_xgb_without_es(
         X_train, y_train,
         cv_splits=cv_splits,
@@ -243,13 +205,11 @@ def train_xgboost(
         metric=metric,
         random_state=random_state,
         fast=fast,
-        use_residual_target=use_residual_target,
-        close_idx=close_idx,
         target_transform=target_transform,
-        atr_idx=atr_idx
+        close_idx=close_idx,
     )
 
-    # 2) retrain z ES
+
     if val_fraction is None:
         raise ValueError("val_fraction nie może być None przy trenowaniu z ES.")
     best_est = _fit_xgb_with_es(
@@ -261,8 +221,11 @@ def train_xgboost(
         random_state=random_state,
         target_transform=target_transform,
         close_idx=close_idx,
-        atr_idx=atr_idx
     )
+
+ 
+    setattr(best_est, "_scaler", feature_scaler)
+    setattr(best_est, "_feature_names", feature_names)
 
     result = {
         "model": "XGBoost (Tuning no-ES → Retrain with ES, TSCV)",
@@ -275,41 +238,33 @@ def train_xgboost(
     return result, best_est
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Predykcja + rekonstrukcja poziomu (jak w DT/RF)
-# ─────────────────────────────────────────────────────────────────────────────
+
 def predict_xgboost(model: XGBRegressor, X: Any) -> np.ndarray:
     bi = getattr(model, "best_iteration_", None)
     if isinstance(bi, int) and bi >= 0:
         try:
-            yhat = model.predict(X, iteration_range=(0, bi + 1))  # XGB 2.x
+            yhat = model.predict(X, iteration_range=(0, bi + 1))  
         except TypeError:
-            yhat = model.predict(X, ntree_limit=bi + 1)            # fallback starsze API
+            yhat = model.predict(X, ntree_limit=bi + 1)            
     else:
         yhat = model.predict(X)
 
     tform    = getattr(model, "_target_transform", "level")
     close_ix = getattr(model, "_close_idx", None)
-    atr_ix   = getattr(model, "_atr_idx", None)
+    scaler   = getattr(model, "_scaler", None)
 
     if tform == "level":
         return yhat
 
+    if tform != "return":
+        raise RuntimeError("Nieobsługiwany tryb predykcji (oczekiwano 'level' lub 'return').")
+
     if close_ix is None:
         raise RuntimeError("Brak _close_idx do rekonstrukcji poziomu.")
 
+
     close_t = X[:, close_ix]
+    if scaler is not None and hasattr(scaler, "mean_") and hasattr(scaler, "scale_"):
+        close_t = close_t * scaler.scale_[close_ix] + scaler.mean_[close_ix]
 
-    if tform == "delta":
-        return close_t + yhat
-
-    if tform == "delta_over_atr":
-        if atr_ix is None:
-            raise RuntimeError("Brak _atr_idx do rekonstrukcji poziomu (delta_over_atr).")
-        atr_t = X[:, atr_ix]
-        return close_t + yhat * atr_t
-
-    if tform == "return":
-        return close_t * (1.0 + yhat)
-
-    return yhat
+    return close_t * (1.0 + yhat)

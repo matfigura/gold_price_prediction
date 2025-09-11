@@ -8,15 +8,8 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.losses import Huber
 
-
 def _set_seeds(seed: int = 42) -> None:
     tf.keras.utils.set_random_seed(seed)
-    # Opcjonalnie determinism:
-    # try:
-    #     tf.config.experimental.enable_op_determinism(True)
-    # except Exception:
-    #     pass
-
 
 def build_lstm_model(
     input_shape: Tuple[int, int],
@@ -25,18 +18,12 @@ def build_lstm_model(
     dropout_rate: float = 0.2,
     lr: float = 1e-3,
     *,
-    recurrent_dropout: float = 0.0,         # NEW
-    clipnorm: Optional[float] = 1.0,        # NEW (gradient clipping)
-    loss_name: str = "mae",                 # NEW: "mae" | "huber" | "mse"
-    huber_delta: float = 1.0                # NEW: delta dla Huber
+    recurrent_dropout: float = 0.0,
+    clipnorm: Optional[float] = 1.0,
+    loss_name: str = "mae",                 
+    huber_delta: float = 1.0
 ) -> tf.keras.Model:
-    """
-    LSTM(units_1, return_sequences=True) -> Dropout
-    LSTM(units_2, return_sequences=False) -> Dropout
-    Dense(1)
-    """
     _set_seeds(42)
-
     model = Sequential([
         LSTM(units_1, return_sequences=True, activation="tanh",
              input_shape=input_shape, recurrent_dropout=recurrent_dropout),
@@ -46,30 +33,26 @@ def build_lstm_model(
         Dropout(dropout_rate),
         Dense(1)
     ])
-
     if loss_name == "huber":
         loss = Huber(delta=huber_delta)
     elif loss_name == "mse":
         loss = "mse"
     else:
         loss = "mae"
-
     opt = Adam(learning_rate=lr, clipnorm=clipnorm) if clipnorm else Adam(learning_rate=lr)
     model.compile(optimizer=opt, loss=loss)
     return model
 
-
 def train_lstm(
     X_train: np.ndarray, y_train: np.ndarray,
     *,
-    val_fraction: float = 0.1,       # walidacja z końcówki TRAIN (chronologiczna)
+    val_fraction: float = 0.1,
     epochs: int = 60,
     batch_size: int = 64,
     units_1: int = 128,
     units_2: int = 32,
     dropout_rate: float = 0.2,
     lr: float = 1e-3,
-    # NEW:
     recurrent_dropout: float = 0.0,
     clipnorm: Optional[float] = 1.0,
     loss_name: str = "mae",
@@ -79,11 +62,6 @@ def train_lstm(
     verbose: int = 2,
     fast: bool = False
 ):
-    """
-    Trening LSTM bez tasowania; walidacja = ostatnie `val_fraction` sekwencji TRAIN.
-    Zwraca: (model, history, (X_val, y_val))
-    """
-    # Tryb "fast" – krótsze epoki i mniejsza pojemność
     if fast:
         epochs         = min(epochs, 25)
         batch_size     = 128 if batch_size == 64 else batch_size
@@ -92,17 +70,14 @@ def train_lstm(
         es_patience    = min(es_patience, 5)
         rlrop_patience = min(rlrop_patience, 3)
 
-    # Chronologiczny split walidacyjny z końcówki TRAIN
     n = len(X_train)
     val_n = max(1, int(val_fraction * n))
     X_tr, y_tr = X_train[:-val_n], y_train[:-val_n]
     X_val, y_val = X_train[-val_n:], y_train[-val_n:]
 
-    # tf.data (szybciej i stabilniej pamięciowo)
     ds_tr  = tf.data.Dataset.from_tensor_slices((X_tr, y_tr)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
     ds_val = tf.data.Dataset.from_tensor_slices((X_val, y_val)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-    # Model + callbacki
     input_shape = (X_train.shape[1], X_train.shape[2])
     model = build_lstm_model(
         input_shape,
@@ -131,9 +106,7 @@ def train_lstm(
 
     t1 = time.time()
     print(f"[LSTM] ✅ Zakończono w {t1 - t0:.2f}s (best val_loss={min(history.history['val_loss']):.6f})")
-
     return model, history, (X_val, y_val)
-
 
 def predict_lstm(model: tf.keras.Model, X_test: np.ndarray) -> np.ndarray:
     ds_test = tf.data.Dataset.from_tensor_slices(X_test).batch(256).prefetch(tf.data.AUTOTUNE)
