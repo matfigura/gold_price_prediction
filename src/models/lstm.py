@@ -105,7 +105,7 @@ def train_lstm(
     )
 
     t1 = time.time()
-    print(f"[LSTM] ✅ Zakończono w {t1 - t0:.2f}s (best val_loss={min(history.history['val_loss']):.6f})")
+    print(f"[LSTM]  Zakończono w {t1 - t0:.2f}s (best val_loss={min(history.history['val_loss']):.6f})")
     return model, history, (X_val, y_val)
 
 def predict_lstm(model: tf.keras.Model, X_test: np.ndarray) -> np.ndarray:

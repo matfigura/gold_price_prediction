@@ -1,0 +1,25 @@
+gold_price_prediction/
+├── .venv
+├── data
+│   └── gold_data.csv
+├── src
+│   ├── models
+│   │   ├── decision_tree.py
+│   │   ├── lstm.py
+│   │   ├── mlp.py
+│   │   ├── random_forest.py
+│   │   └── xgboost_model.py
+│   ├── viz
+│   │   ├── __init__.py
+│   │   └── plots.py
+│   ├── __init__.py
+│   ├── data_lstm.py
+│   ├── data_preprocessing.py
+│   └── feature_viz.py
+├── .gitattributes
+├── .gitignore
+├── analyze_features.py
+├── main.py
+├── PROJECT_TREE.txt
+├── README.md
+└── requirements.txt

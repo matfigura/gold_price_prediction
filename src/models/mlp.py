@@ -100,7 +100,7 @@ def train_mlp(
         }
         if tag:
             result['Tag'] = tag
-        print(f"[MLP] ✅ Zakończono (fast) w {t1 - t0:.2f}s | CV MAE={result['CV MAE']:.6f}"
+        print(f"[MLP] Zakończono (fast) w {t1 - t0:.2f}s | CV MAE={result['CV MAE']:.6f}"
               f"{' | ' + tag if tag else ''}")
         print(f"[MLP]    Najlepsze parametry: {result['Best params']}")
         return result, search_scan.best_estimator_
@@ -139,7 +139,7 @@ def train_mlp(
         }
         if tag:
             result['Tag'] = tag + f" | fix_hls={fix_hidden_size}"
-        print(f"[MLP] ✅ Zakończono (etap 2) w {t1 - t0:.2f}s | CV MAE={result['CV MAE']:.6f}"
+        print(f"[MLP] Zakończono (etap 2) w {t1 - t0:.2f}s | CV MAE={result['CV MAE']:.6f}"
               f"{' | ' + result.get('Tag','') if tag else ''}")
         print(f"[MLP]    Najlepsze parametry: {result['Best params']}")
         return result, search_fin.best_estimator_
@@ -163,7 +163,7 @@ def train_mlp(
     search_scan.fit(X_train, y_train)
     t1_1 = time.time()
     best_hls = search_scan.best_params_['mlp__hidden_layer_sizes']  
-    print(f"[MLP] ✅ Etap 1/2 done w {t1_1 - t1_0:.2f}s | best_hls={best_hls} | CV MAE={-search_scan.best_score_:.6f}"
+    print(f"[MLP] Etap 1/2 done w {t1_1 - t1_0:.2f}s | best_hls={best_hls} | CV MAE={-search_scan.best_score_:.6f}"
           f"{' | ' + tag if tag else ''}")
 
  
@@ -200,7 +200,7 @@ def train_mlp(
     }
     if tag:
         result['Tag'] = tag + f" | stage1_hls={best_hls}"
-    print(f"[MLP] ✅ Zakończono strojenie w {time.time() - t_global0:.2f}s | CV MAE={result['CV MAE']:.6f}"
+    print(f"[MLP] Zakończono strojenie w {time.time() - t_global0:.2f}s | CV MAE={result['CV MAE']:.6f}"
           f"{' | ' + result.get('Tag','') if tag else ''}")
     print(f"[MLP]    Najlepsze parametry: {result['Best params']}")
     return result, search_fin.best_estimator_
